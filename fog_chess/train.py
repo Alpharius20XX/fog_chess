@@ -1,17 +1,3 @@
-"""Training loop for fog-of-war chess.
-
-At each step, run k_samples rollouts to estimate per-action returns.
-Each rollout:
-1. Sample an action from the policy via forward_with_reconstruction (internal
-   determinization + forward) on the current player's fog log.
-2. Apply that action to a copy of the true game state.
-3. Roll out to terminal; both players use forward_with_reconstruction each turn.
-Training targets:
-- Policy: softmax of per-action average MC returns.
-- Value: game outcome (±1 or 0).
-- Mask: true piece type at UNKNOWN positions.
-"""
-
 import copy
 import random
 import time
@@ -39,16 +25,17 @@ def rollout_to_terminal_batch(
     for_player: int,
     max_depth: Optional[int] = None,
 ) -> List[float]:
-    """Roll out multiple games in parallel using batched inference.
+    """Roll out multiple games in parallel, returning bootstrapped value estimates.
 
-    Stops at terminal or after max_depth turns (per game). When capped by
-    depth, the outcome is 0 (draw) for unfinished games.
+    At each visited state the value network provides an estimate from for_player's
+    perspective. Terminal states use the actual game outcome. Returns the per-game
+    average across all collected estimates.
     """
     games = [g.copy() for g in games]
     n = len(games)
-    outcomes = [0.0] * n
     active = list(range(n))
     depths = [0] * n
+    value_accumulators: List[List[float]] = [[] for _ in range(n)]
 
     while active:
         need_move = []
@@ -68,30 +55,40 @@ def rollout_to_terminal_batch(
             if not moves:
                 finished.append(idx)
             else:
-                need_move.append((idx, g, fog_log, moves, action_indices))
+                need_move.append((idx, g, fog_log, moves, action_indices, current))
 
         for idx in finished:
             active.remove(idx)
             g = games[idx]
-            if g.winner == for_player:
-                outcomes[idx] = 1.0
-            elif g.winner == 3 - for_player:
-                outcomes[idx] = -1.0
+            if g.game_over:
+                if g.winner == for_player:
+                    outcome = 1.0
+                elif g.winner == 3 - for_player:
+                    outcome = -1.0
+                else:
+                    outcome = 0.0
+                value_accumulators[idx].append(outcome)
+            # depth-limited games rely solely on value estimates already collected
 
         if not need_move:
             break
 
         with torch.no_grad():
             outputs = net.forward_with_reconstruction_batch(
-                [(fl, ai) for _, _, fl, _, ai in need_move]
+                [(fl, ai) for _, _, fl, _, ai, _ in need_move]
             )
 
-        for (idx, g, _, moves, _), out in zip(need_move, outputs):
+        for (idx, g, _, moves, _, current_player), out in zip(need_move, outputs):
+            v = 2.0 * torch.sigmoid(out.value).item() - 1.0
+            if current_player != for_player:
+                v = -v
+            value_accumulators[idx].append(v)
+
             action_idx = int(torch.multinomial(out.action_log_probs.exp(), 1).item())
             g.make_move(moves[action_idx])
             depths[idx] += 1
 
-    return outcomes
+    return [sum(est) / len(est) if est else 0.0 for est in value_accumulators]
 
 
 def mc_action_search(
@@ -107,7 +104,6 @@ def mc_action_search(
     """Run k_samples MC rollouts with batched inference."""
     n_actions = len(action_indices)
 
-    # One encoder pass samples k_samples determinizations; one batched forward scores them.
     with torch.no_grad():
         det_logs = net.reconstruct_masks_batch(fog_log, action_indices, k_samples)
         outputs = net.forward_batch([(det, action_indices) for det in det_logs])
@@ -141,8 +137,35 @@ Step = Tuple[
     torch.Tensor,  # improved_probs [n_actions]
     int,  # player (1 or 2)
     Dict[int, int],  # sq -> true piece.value for each UNKNOWN square
-    bool,  # whether MC search was run (policy loss only applied when True)
+    bool,  # whether MC search was run (policy loss only when True)
 ]
+
+
+def pretrain_self_play_game() -> Tuple[List[Step], Minichess]:
+    """Play one game with uniform random moves; only value and mask heads are trained."""
+    game = Minichess()
+    trajectory: List[Step] = []
+
+    while not game.game_over:
+        player = game.current_player
+        fog_log = game.get_fog_log(player)
+        moves, action_indices = game.get_legal_moves_and_indices(player)
+        if not moves:
+            break
+
+        true_mask_pieces: Dict[int, int] = {
+            sq: game.board[sq // 5, sq % 5].value for _, sq, p in fog_log if p == 0
+        }
+
+        action_idx = random.randrange(len(moves))
+        improved_probs = torch.ones(len(action_indices)) / len(action_indices)
+
+        trajectory.append(
+            (fog_log, action_indices, improved_probs, player, true_mask_pieces, False)
+        )
+        game.make_move(moves[action_idx])
+
+    return trajectory, game
 
 
 def self_play_game(
@@ -155,7 +178,6 @@ def self_play_game(
     game = Minichess()
     trajectory: List[Step] = []
 
-    move_num = 0
     while not game.game_over:
         player = game.current_player
         fog_log = game.get_fog_log(player)
@@ -193,7 +215,6 @@ def self_play_game(
         )
 
         game.make_move(moves[action_idx])
-        move_num += 1
 
     return trajectory, game
 
@@ -259,6 +280,40 @@ def update_ema(net: FogChessNet, target_net: FogChessNet, decay: float) -> None:
     with torch.no_grad():
         for p, p_t in zip(net.parameters(), target_net.parameters()):
             p_t.data.mul_(decay).add_(p.data, alpha=1.0 - decay)
+
+
+def _update_step(
+    net: FogChessNet,
+    target_net: FogChessNet,
+    optimizer,
+    scheduler,
+    replay_buffer: Deque,
+    train_games_per_step: int,
+    c_policy: float,
+    c_value: float,
+    c_mask: float,
+    grad_clip: float,
+    ema_decay: float,
+) -> Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
+    """Sample a batch from the replay buffer and perform one gradient update."""
+    if len(replay_buffer) < train_games_per_step:
+        return None
+    batch = random.sample(list(replay_buffer), train_games_per_step)
+    optimizer.zero_grad()
+    results = [
+        compute_losses(net, traj, g, c_policy, c_value, c_mask) for traj, g in batch
+    ]
+    totals, policies, values, masks = zip(*results)
+    loss = torch.stack(totals).mean()
+    loss_policy = torch.stack(policies).mean()
+    loss_value = torch.stack(values).mean()
+    loss_mask = torch.stack(masks).mean()
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=grad_clip)
+    optimizer.step()
+    scheduler.step()
+    update_ema(net, target_net, ema_decay)
+    return loss, loss_policy, loss_value, loss_mask
 
 
 def greedy_agent_move(game: Minichess) -> Optional[Move]:
@@ -333,6 +388,7 @@ def train(cfg: dict):
     k_samples: int = tcfg["k_samples"]
     mc_prob: float = tcfg.get("mc_prob", 0.1)
     mc_rollout_depth: Optional[int] = tcfg.get("mc_rollout_depth", None)
+    pretrain_iterations: int = tcfg.get("pretrain_iterations", 0)
     num_iterations: int = tcfg.get("num_iterations", 1000)
     ema_decay: float = tcfg.get("target_ema", 0.995)
     grad_clip: float = tcfg.get("grad_clip", 1.0)
@@ -349,63 +405,109 @@ def train(cfg: dict):
     writer = SummaryWriter(log_dir=log_dir)
     replay_buffer: Deque[Tuple[List[Step], Minichess]] = deque(maxlen=buffer_size)
 
+    # --- Pretraining phase ---
+    for iteration in range(pretrain_iterations):
+        t0 = time.time()
+        game_lengths = []
+        for _ in range(games_per_update):
+            trajectory, game = pretrain_self_play_game()
+            if trajectory:
+                replay_buffer.append((trajectory, game))
+                game_lengths.append(len(trajectory))
+
+        print(
+            f"[{_ts()}] pretrain {iteration}: self-play done in {time.time() - t0:.1f}s, buffer={len(replay_buffer)}",
+            flush=True,
+        )
+
+        result = _update_step(
+            net,
+            target_net,
+            optimizer,
+            scheduler,
+            replay_buffer,
+            train_games_per_step,
+            c_policy,
+            c_value,
+            c_mask,
+            grad_clip,
+            ema_decay,
+        )
+        if result is None:
+            print(
+                f"[{_ts()}] pretrain {iteration}: buffer too small ({len(replay_buffer)}<{train_games_per_step}), skipping update",
+                flush=True,
+            )
+            continue
+
+        loss, loss_policy, loss_value, loss_mask = result
+        avg_game_len = sum(game_lengths) / len(game_lengths) if game_lengths else 0.0
+
+        writer.add_scalar("pretrain/loss/total", loss.item(), iteration)
+        writer.add_scalar("pretrain/loss/value", loss_value.item(), iteration)
+        writer.add_scalar("pretrain/loss/mask", loss_mask.item(), iteration)
+        writer.add_scalar("pretrain/game_length", avg_game_len, iteration)
+
+        print(
+            f"pretrain {iteration:5d} | loss {loss.item():8.4f} | "
+            f"v {loss_value.item():.4f} | m {loss_mask.item():.4f} | "
+            f"game_len {avg_game_len:.1f} | buffer {len(replay_buffer):4d}"
+        )
+
+    # --- Self-play training phase ---
     for iteration in range(num_iterations):
         t0 = time.time()
-        for g_idx in range(games_per_update):
+        game_lengths = []
+        for _ in range(games_per_update):
             trajectory, game = self_play_game(
                 target_net, k_samples, mc_prob, mc_rollout_depth
             )
             if trajectory:
                 replay_buffer.append((trajectory, game))
+                game_lengths.append(len(trajectory))
+
         print(
             f"[{_ts()}] iter {iteration}: self-play done in {time.time() - t0:.1f}s, buffer={len(replay_buffer)}",
             flush=True,
         )
 
-        if len(replay_buffer) < train_games_per_step:
+        result = _update_step(
+            net,
+            target_net,
+            optimizer,
+            scheduler,
+            replay_buffer,
+            train_games_per_step,
+            c_policy,
+            c_value,
+            c_mask,
+            grad_clip,
+            ema_decay,
+        )
+        if result is None:
             print(
                 f"[{_ts()}] iter {iteration}: buffer too small ({len(replay_buffer)}<{train_games_per_step}), skipping update",
                 flush=True,
             )
             continue
 
-        print(
-            f"[{_ts()}] iter {iteration}: training on batch of {train_games_per_step}",
-            flush=True,
-        )
-        batch = random.sample(list(replay_buffer), train_games_per_step)
-
-        optimizer.zero_grad()
-        results = [
-            compute_losses(net, traj, g, c_policy, c_value, c_mask) for traj, g in batch
-        ]
-        totals, policies, values, masks = zip(*results)
-
-        loss = torch.stack(totals).mean()
-        loss_policy = torch.stack(policies).mean()
-        loss_value = torch.stack(values).mean()
-        loss_mask = torch.stack(masks).mean()
-
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=grad_clip)
-        optimizer.step()
-        scheduler.step()
-
-        update_ema(net, target_net, ema_decay)
-
+        loss, loss_policy, loss_value, loss_mask = result
+        avg_game_len = sum(game_lengths) / len(game_lengths) if game_lengths else 0.0
         lr = scheduler.get_last_lr()[0]
+
         writer.add_scalar("loss/total", loss.item(), iteration)
         writer.add_scalar("loss/policy", loss_policy.item(), iteration)
         writer.add_scalar("loss/value", loss_value.item(), iteration)
         writer.add_scalar("loss/mask", loss_mask.item(), iteration)
         writer.add_scalar("train/lr", lr, iteration)
         writer.add_scalar("train/buffer_size", len(replay_buffer), iteration)
+        writer.add_scalar("train/game_length", avg_game_len, iteration)
 
         print(
             f"iter {iteration:5d} | loss {loss.item():8.4f} | "
             f"p {loss_policy.item():.4f} | v {loss_value.item():.4f} | "
-            f"m {loss_mask.item():.4f} | buffer {len(replay_buffer):4d} | "
-            f"lr {lr:.2e}"
+            f"m {loss_mask.item():.4f} | game_len {avg_game_len:.1f} | "
+            f"buffer {len(replay_buffer):4d} | lr {lr:.2e}"
         )
 
         if (iteration + 1) % eval_interval == 0:
