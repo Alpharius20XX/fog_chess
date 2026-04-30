@@ -188,6 +188,9 @@ class Minichess:
         self.winner = None
         self.move_history: List[Move] = []
         self.move_count = 0
+        self._fog_cache_initialized = False
+        self._fog_base_log: dict = {1: [], 2: []}
+        self._fog_state_cache: dict = {1: None, 2: None}
         return self.get_state()
 
     def get_state(self):
@@ -215,40 +218,16 @@ class Minichess:
         return tuple(tuple(r) for r in fog_board)
 
     def get_fog_log(self, player: int) -> List[Tuple[int, int, int]]:
-        replay = Minichess()
-        fog_states = [replay.get_fog_state(player)]
-
-        for move in self.move_history:
-            replay._make_move_internal(move)
-            replay.current_player = 3 - replay.current_player
-            fog_states.append(replay.get_fog_state(player))
-
-        log = []
-        latest = len(fog_states) - 1
-
-        for turn, state in enumerate(fog_states):
-            prev = fog_states[turn - 1] if turn > 0 else None
-            is_first = turn == 0
-            is_latest = turn == latest
-
-            for row in range(5):
-                for col in range(5):
-                    sq = row * 5 + col
-                    piece = state[row][col]
-                    prev_piece = prev[row][col] if prev is not None else None
-
-                    if is_first:
-                        if piece != Piece.UNKNOWN:
-                            log.append((turn, sq, piece.value))
-                        elif is_latest:
-                            log.append((turn, sq, piece.value))
-                    else:
-                        if piece != prev_piece and piece != Piece.UNKNOWN:
-                            log.append((turn, sq, piece.value))
-                        if is_latest and piece == Piece.UNKNOWN:
-                            log.append((turn, sq, piece.value))
-
-        return log
+        self._ensure_fog_cache()
+        fog_state = self._fog_state_cache[player]
+        turn = self.move_count
+        unknowns = [
+            (turn, row * 5 + col, 0)
+            for row in range(5)
+            for col in range(5)
+            if fog_state[row][col] == Piece.UNKNOWN
+        ]
+        return self._fog_base_log[player] + unknowns
 
     def get_log(self) -> List[Tuple[int, int, int]]:
         replay = Minichess()
@@ -282,15 +261,66 @@ class Minichess:
             self.current_player = original_player
         return [(m.start[0] * 5 + m.start[1], m.end[0] * 5 + m.end[1]) for m in moves]
 
+    def get_legal_moves_and_indices(
+        self, player: int
+    ) -> Tuple[List["Move"], List[Tuple[int, int]]]:
+        """Return (moves, action_indices) together to avoid computing valid moves twice."""
+        original_player = self.current_player
+        self.current_player = player
+        try:
+            moves = self.get_all_valid_moves()
+        finally:
+            self.current_player = original_player
+        indices = [(m.start[0] * 5 + m.start[1], m.end[0] * 5 + m.end[1]) for m in moves]
+        return moves, indices
+
+    def _ensure_fog_cache(self):
+        if self._fog_cache_initialized:
+            return
+        replay = Minichess()
+        fog_states = {p: [replay.get_fog_state(p)] for p in (1, 2)}
+        for move in self.move_history:
+            replay._make_move_internal(move)
+            replay.current_player = 3 - replay.current_player
+            for p in (1, 2):
+                fog_states[p].append(replay.get_fog_state(p))
+        for p in (1, 2):
+            states = fog_states[p]
+            base_log = []
+            for turn, state in enumerate(states):
+                prev = states[turn - 1] if turn > 0 else None
+                for row in range(5):
+                    for col in range(5):
+                        sq = row * 5 + col
+                        piece = state[row][col]
+                        if turn == 0:
+                            if piece != Piece.UNKNOWN:
+                                base_log.append((turn, sq, piece.value))
+                        else:
+                            prev_piece = prev[row][col]  # type: ignore[index]
+                            if piece != prev_piece and piece != Piece.UNKNOWN:
+                                base_log.append((turn, sq, piece.value))
+            self._fog_base_log[p] = base_log
+            self._fog_state_cache[p] = states[-1]
+        self._fog_cache_initialized = True
+
     def copy(self):
-        new_game = Minichess()
+        new_game = object.__new__(Minichess)
+        new_game.board_size = 5
         new_game.board = self.board.copy()
         new_game.current_player = self.current_player
         new_game.game_over = self.game_over
         new_game.winner = self.winner
         new_game.move_history = self.move_history.copy()
         new_game.move_count = self.move_count
+        new_game._fog_cache_initialized = False
+        new_game._fog_base_log = {1: [], 2: []}
+        new_game._fog_state_cache = {1: None, 2: None}
         return new_game
+
+    @staticmethod
+    def sq_to_rc(sq: int) -> Tuple[int, int]:
+        return sq // 5, sq % 5
 
     @staticmethod
     def is_white_piece(piece: Piece) -> bool:
@@ -536,6 +566,18 @@ class Minichess:
         self.move_history.append(move)
         self.move_count += 1
         self.current_player = 3 - self.current_player
+
+        if self._fog_cache_initialized:
+            turn = self.move_count
+            for p in (1, 2):
+                prev_fog = self._fog_state_cache[p]
+                new_fog = self.get_fog_state(p)
+                for row in range(5):
+                    for col in range(5):
+                        piece = new_fog[row][col]
+                        if piece != prev_fog[row][col] and piece != Piece.UNKNOWN:
+                            self._fog_base_log[p].append((turn, row * 5 + col, piece.value))
+                self._fog_state_cache[p] = new_fog
 
         opponent_moves = self.get_all_valid_moves()
         is_check = self._is_in_check(self.current_player)

@@ -1,0 +1,23 @@
+model:
+  d_model: 128
+  n_head: 4
+  n_layers: 4
+  dim_feedforward: 256
+  dropout: 0.1
+
+train:
+  k_samples: 24
+  lr: 0.0001
+  warmup_steps: 200
+  grad_clip: 1.0
+  target_ema: 0.995
+  c_policy: 1.0
+  c_value: 1.0
+  c_mask: 1.0
+  games_per_update: 4
+  buffer_size: 128
+  train_games_per_step: 8
+  num_iterations: 1000
+  eval_interval: 50
+  eval_games: 20
+  log_dir: runs/fog_chess
