@@ -250,6 +250,38 @@ class Minichess:
 
         return log
 
+    def get_log(self) -> List[Tuple[int, int, int]]:
+        replay = Minichess()
+        states = [replay.get_state()]
+
+        for move in self.move_history:
+            replay._make_move_internal(move)
+            replay.current_player = 3 - replay.current_player
+            states.append(replay.get_state())
+
+        log = []
+        for turn, state in enumerate(states):
+            prev = states[turn - 1] if turn > 0 else None
+            for row in range(5):
+                for col in range(5):
+                    sq = row * 5 + col
+                    piece = state[row][col]
+                    if turn == 0:
+                        log.append((turn, sq, piece.value))
+                    elif prev is not None and piece != prev[row][col]:
+                        log.append((turn, sq, piece.value))
+
+        return log
+
+    def get_legal_move_indices(self, player: int) -> List[Tuple[int, int]]:
+        original_player = self.current_player
+        self.current_player = player
+        try:
+            moves = self.get_all_valid_moves()
+        finally:
+            self.current_player = original_player
+        return [(m.start[0] * 5 + m.start[1], m.end[0] * 5 + m.end[1]) for m in moves]
+
     def copy(self):
         new_game = Minichess()
         new_game.board = self.board.copy()

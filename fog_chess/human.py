@@ -4,38 +4,18 @@ from .visual import visualize_board
 
 def parse_move_input(text, valid_moves):
     """
-    User input format:
-    e.g. a2a3, b1c3, a2a1=Q
+    User input format: two space-separated square indices, e.g. "20 15"
+    Index encoding: row * 5 + col (same as get_legal_move_indices).
     """
-    text = text.strip().lower().replace(" ", "")
-    cols = "abcde"
-
-    for move in valid_moves:
-        if move.to_notation().lower().replace("+", "").replace("#", "") == text:
-            return move
-
-    # allow simple input like a2a3 without promotion/check signs
-    if len(text) >= 4:
-        try:
-            sc = cols.index(text[0])
-            sr = 5 - int(text[1])
-            ec = cols.index(text[2])
-            er = 5 - int(text[3])
-
-            promotion = None
-            if "=" in text:
-                promotion = text.split("=")[1].upper()
-
+    try:
+        parts = text.strip().split()
+        if len(parts) == 2:
+            from_sq, to_sq = int(parts[0]), int(parts[1])
             for move in valid_moves:
-                if move.start == (sr, sc) and move.end == (er, ec):
-                    if promotion is None or (
-                        move.promotion is not None
-                        and move.promotion.to_string().upper() == promotion
-                    ):
-                        return move
-        except Exception:
-            return None
-
+                if move.start[0] * 5 + move.start[1] == from_sq and move.end[0] * 5 + move.end[1] == to_sq:
+                    return move
+    except Exception:
+        pass
     return None
 
 
@@ -43,7 +23,7 @@ def play_two_players(visual=False):
     game = Minichess()
 
     print("Game started.")
-    print("Input move like: a2a3 or b1c3")
+    print("Input move as two indices, e.g. '20 15' (from_sq to_sq, index = row*5+col)")
 
     last_moves = {}
 
@@ -58,9 +38,10 @@ def play_two_players(visual=False):
             visualize_board(state, last_moves.get(player))
 
         valid_moves = game.get_all_valid_moves()
+        legal_indices = game.get_legal_move_indices(player)
 
         print("Your valid moves:")
-        print(", ".join(m.to_notation() for m in valid_moves))
+        print(", ".join(f"({f} {t})" for f, t in legal_indices))
 
         user_input = input("Your move: ")
         move = parse_move_input(user_input, valid_moves)
