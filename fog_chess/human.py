@@ -2,44 +2,6 @@ from .chess import Minichess
 from .visual import visualize_board
 
 
-def play_game(env, agent1, agent2, training=True, verbose=False):
-    env.reset()
-    history = []
-    agents = {1: agent1, 2: agent2}
-
-    while not env.game_over and env.move_count < 100:
-        player = env.current_player
-        agent = agents[player]
-        state = env.get_state()
-        move = agent.choose_action(env, training=training)
-        if move is None:
-            break
-
-        history.append((state, move, player))
-        env.make_move(move)
-
-        if verbose:
-            name = "White" if player == 1 else "Black"
-            print(f"{env.move_count}. {name}: {move.to_notation()}")
-            env.print_board()
-
-    if env.winner == 1:
-        agent1.wins += 1
-        agent2.losses += 1
-    elif env.winner == 2:
-        agent2.wins += 1
-        agent1.losses += 1
-    else:
-        agent1.draws += 1
-        agent2.draws += 1
-
-    if training:
-        agent1.update_from_game(history, env.winner or 0)
-        agent2.update_from_game(history, env.winner or 0)
-
-    return env.winner
-
-
 def parse_move_input(text, valid_moves):
     """
     User input format:
@@ -83,16 +45,17 @@ def play_two_players(visual=False):
     print("Game started.")
     print("Input move like: a2a3 or b1c3")
 
-    last_move = None
-
-    if visual:
-        visualize_board(game.board, "Initial Board", last_move)
+    last_moves = {}
 
     while not game.game_over and game.move_count < 100:
         player = game.current_player
         name = "White" if player == 1 else "Black"
 
         print(f"{name} to play")
+
+        state = game.get_fog_state(player)
+        if visual:
+            visualize_board(state, last_moves.get(player))
 
         valid_moves = game.get_all_valid_moves()
 
@@ -107,15 +70,8 @@ def play_two_players(visual=False):
             continue
 
         game.make_move(move)
-        last_move = move
+        last_moves[player] = move
         print(f"You played: {move.to_notation()}")
-
-        if visual:
-            visualize_board(
-                game.board,
-                f"Move {game}: {name} {last_move.to_notation()}",
-                last_move,
-            )
 
     print(f"Winner: {game.winner}")
 

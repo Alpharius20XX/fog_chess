@@ -5,7 +5,7 @@ import numpy as np
 
 
 class Piece(Enum):
-    UNKOWN = 0
+    UNKNOWN = 0
     EMPTY = 1
     WHITE_PAWN = 2
     WHITE_KNIGHT = 3
@@ -60,7 +60,7 @@ class Piece(Enum):
 
     def to_string(self):
         match self:
-            case Piece.UNKOWN:
+            case Piece.UNKNOWN:
                 return "?"
             case Piece.EMPTY:
                 return " "
@@ -88,6 +88,8 @@ class Piece(Enum):
                 return "q"
             case Piece.BLACK_KING:
                 return "k"
+            case _:
+                return ""
 
 
 @dataclass(frozen=True)
@@ -190,6 +192,27 @@ class Minichess:
 
     def get_state(self):
         return tuple(tuple(row) for row in self.board)
+
+    def get_fog_state(self, player: int):
+        visible: set = set()
+        original_player = self.current_player
+        self.current_player = player
+        try:
+            for row in range(5):
+                for col in range(5):
+                    piece = self.board[row, col]
+                    if piece != Piece.EMPTY and self.is_friendly(piece, player):
+                        visible.add((row, col))
+                        for move in self.get_piece_moves(row, col, check_legal=False):
+                            visible.add(move.end)
+        finally:
+            self.current_player = original_player
+
+        fog_board = np.empty((5, 5), dtype=object)
+        for row in range(5):
+            for col in range(5):
+                fog_board[row, col] = self.board[row, col] if (row, col) in visible else Piece.UNKNOWN
+        return tuple(tuple(r) for r in fog_board)
 
     def copy(self):
         new_game = Minichess()
