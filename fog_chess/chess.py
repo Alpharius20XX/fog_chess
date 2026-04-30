@@ -214,6 +214,42 @@ class Minichess:
                 fog_board[row, col] = self.board[row, col] if (row, col) in visible else Piece.UNKNOWN
         return tuple(tuple(r) for r in fog_board)
 
+    def get_fog_log(self, player: int) -> List[Tuple[int, int, int]]:
+        replay = Minichess()
+        fog_states = [replay.get_fog_state(player)]
+
+        for move in self.move_history:
+            replay._make_move_internal(move)
+            replay.current_player = 3 - replay.current_player
+            fog_states.append(replay.get_fog_state(player))
+
+        log = []
+        latest = len(fog_states) - 1
+
+        for turn, state in enumerate(fog_states):
+            prev = fog_states[turn - 1] if turn > 0 else None
+            is_first = turn == 0
+            is_latest = turn == latest
+
+            for row in range(5):
+                for col in range(5):
+                    sq = row * 5 + col
+                    piece = state[row][col]
+                    prev_piece = prev[row][col] if prev is not None else None
+
+                    if is_first:
+                        if piece != Piece.UNKNOWN:
+                            log.append((turn, sq, piece.value))
+                        elif is_latest:
+                            log.append((turn, sq, piece.value))
+                    else:
+                        if piece != prev_piece and piece != Piece.UNKNOWN:
+                            log.append((turn, sq, piece.value))
+                        if is_latest and piece == Piece.UNKNOWN:
+                            log.append((turn, sq, piece.value))
+
+        return log
+
     def copy(self):
         new_game = Minichess()
         new_game.board = self.board.copy()
