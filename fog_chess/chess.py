@@ -1,15 +1,102 @@
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
+from enum import Enum
 import numpy as np
+
+
+class Piece(Enum):
+    UNKOWN = 0
+    EMPTY = 1
+    WHITE_PAWN = 2
+    WHITE_KNIGHT = 3
+    WHITE_BISHOP = 4
+    WHITE_ROOK = 5
+    WHITE_QUEEN = 6
+    WHITE_KING = 7
+    BLACK_PAWN = 8
+    BLACK_KNIGHT = 9
+    BLACK_BISHOP = 10
+    BLACK_ROOK = 11
+    BLACK_QUEEN = 12
+    BLACK_KING = 13
+
+    def is_white(self) -> bool:
+        return self in (
+            Piece.WHITE_PAWN,
+            Piece.WHITE_KNIGHT,
+            Piece.WHITE_BISHOP,
+            Piece.WHITE_ROOK,
+            Piece.WHITE_QUEEN,
+            Piece.WHITE_KING,
+        )
+
+    def is_black(self) -> bool:
+        return self in (
+            Piece.BLACK_PAWN,
+            Piece.BLACK_KNIGHT,
+            Piece.BLACK_BISHOP,
+            Piece.BLACK_ROOK,
+            Piece.BLACK_QUEEN,
+            Piece.BLACK_KING,
+        )
+
+    def get_value(self, side: bool):
+        sign = 1 if side else -1
+        match self:
+            case Piece.WHITE_PAWN | Piece.BLACK_PAWN:
+                return sign * 100
+            case Piece.WHITE_KNIGHT | Piece.BLACK_KNIGHT:
+                return sign * 320
+            case Piece.WHITE_BISHOP | Piece.BLACK_BISHOP:
+                return sign * 330
+            case Piece.WHITE_ROOK | Piece.BLACK_ROOK:
+                return sign * 500
+            case Piece.WHITE_QUEEN | Piece.BLACK_QUEEN:
+                return sign * 900
+            case Piece.WHITE_KING | Piece.BLACK_KING:
+                return sign * 20000
+            case _:
+                return 0
+
+    def to_string(self):
+        match self:
+            case Piece.UNKOWN:
+                return "?"
+            case Piece.EMPTY:
+                return " "
+            case Piece.WHITE_PAWN:
+                return "P"
+            case Piece.WHITE_KNIGHT:
+                return "N"
+            case Piece.WHITE_BISHOP:
+                return "B"
+            case Piece.WHITE_ROOK:
+                return "R"
+            case Piece.WHITE_QUEEN:
+                return "Q"
+            case Piece.WHITE_KING:
+                return "K"
+            case Piece.BLACK_PAWN:
+                return "p"
+            case Piece.BLACK_KNIGHT:
+                return "n"
+            case Piece.BLACK_BISHOP:
+                return "b"
+            case Piece.BLACK_ROOK:
+                return "r"
+            case Piece.BLACK_QUEEN:
+                return "q"
+            case Piece.BLACK_KING:
+                return "k"
 
 
 @dataclass(frozen=True)
 class Move:
     start: Tuple[int, int]
     end: Tuple[int, int]
-    piece: str
-    captured: Optional[str] = None
-    promotion: Optional[str] = None
+    piece: Piece
+    captured: Optional[Piece] = None
+    promotion: Optional[Piece] = None
     is_check: bool = False
     is_checkmate: bool = False
 
@@ -19,7 +106,7 @@ class Move:
         e = f"{cols[self.end[1]]}{5 - self.end[0]}"
         notation = f"{s}{e}"
         if self.promotion:
-            notation += f"={self.promotion.upper()}"
+            notation += f"={self.promotion.to_string().upper()}"
         if self.is_checkmate:
             notation += "#"
         elif self.is_check:
@@ -27,22 +114,34 @@ class Move:
         return notation
 
 
-class Minichess:
-    PIECE_VALUES = {
-        "P": 100,
-        "N": 320,
-        "B": 330,
-        "R": 500,
-        "Q": 900,
-        "K": 20000,
-        "p": -100,
-        "n": -320,
-        "b": -330,
-        "r": -500,
-        "q": -900,
-        "k": -20000,
+_SLIDING_PIECES = frozenset(
+    {
+        Piece.WHITE_BISHOP,
+        Piece.BLACK_BISHOP,
+        Piece.WHITE_ROOK,
+        Piece.BLACK_ROOK,
+        Piece.WHITE_QUEEN,
+        Piece.BLACK_QUEEN,
+        Piece.WHITE_KING,
+        Piece.BLACK_KING,
     }
+)
 
+_WHITE_PROMOTIONS = [
+    Piece.WHITE_QUEEN,
+    Piece.WHITE_ROOK,
+    Piece.WHITE_BISHOP,
+    Piece.WHITE_KNIGHT,
+]
+_BLACK_PROMOTIONS = [
+    Piece.BLACK_QUEEN,
+    Piece.BLACK_ROOK,
+    Piece.BLACK_BISHOP,
+    Piece.BLACK_KNIGHT,
+]
+
+
+class Minichess:
     def __init__(self):
         self.board_size = 5
         self.reset()
@@ -50,13 +149,37 @@ class Minichess:
     def reset(self):
         self.board = np.array(
             [
-                ["k", "q", "b", "n", "r"],
-                ["p", "p", "p", "p", "p"],
-                [".", ".", ".", ".", "."],
-                ["P", "P", "P", "P", "P"],
-                ["K", "Q", "B", "N", "R"],
+                [
+                    Piece.BLACK_KING,
+                    Piece.BLACK_QUEEN,
+                    Piece.BLACK_BISHOP,
+                    Piece.BLACK_KNIGHT,
+                    Piece.BLACK_ROOK,
+                ],
+                [
+                    Piece.BLACK_PAWN,
+                    Piece.BLACK_PAWN,
+                    Piece.BLACK_PAWN,
+                    Piece.BLACK_PAWN,
+                    Piece.BLACK_PAWN,
+                ],
+                [Piece.EMPTY, Piece.EMPTY, Piece.EMPTY, Piece.EMPTY, Piece.EMPTY],
+                [
+                    Piece.WHITE_PAWN,
+                    Piece.WHITE_PAWN,
+                    Piece.WHITE_PAWN,
+                    Piece.WHITE_PAWN,
+                    Piece.WHITE_PAWN,
+                ],
+                [
+                    Piece.WHITE_KING,
+                    Piece.WHITE_QUEEN,
+                    Piece.WHITE_BISHOP,
+                    Piece.WHITE_KNIGHT,
+                    Piece.WHITE_ROOK,
+                ],
             ],
-            dtype=str,
+            dtype=object,
         )
         self.current_player = 1
         self.game_over = False
@@ -66,7 +189,7 @@ class Minichess:
         return self.get_state()
 
     def get_state(self):
-        return tuple(tuple(str(c) for c in row) for row in self.board)
+        return tuple(tuple(row) for row in self.board)
 
     def copy(self):
         new_game = Minichess()
@@ -79,41 +202,41 @@ class Minichess:
         return new_game
 
     @staticmethod
-    def is_white_piece(piece: str) -> bool:
-        return piece != "." and piece.isupper()
+    def is_white_piece(piece: Piece) -> bool:
+        return piece.is_white()
 
     @staticmethod
-    def is_black_piece(piece: str) -> bool:
-        return piece != "." and piece.islower()
+    def is_black_piece(piece: Piece) -> bool:
+        return piece.is_black()
 
-    def is_enemy(self, piece: str, player: int) -> bool:
-        return self.is_black_piece(piece) if player == 1 else self.is_white_piece(piece)
+    def is_enemy(self, piece: Piece, player: int) -> bool:
+        return piece.is_black() if player == 1 else piece.is_white()
 
-    def is_friendly(self, piece: str, player: int) -> bool:
-        return self.is_white_piece(piece) if player == 1 else self.is_black_piece(piece)
+    def is_friendly(self, piece: Piece, player: int) -> bool:
+        return piece.is_white() if player == 1 else piece.is_black()
 
     def get_piece_moves(
         self, row: int, col: int, check_legal: bool = True
     ) -> List[Move]:
         piece = self.board[row, col]
-        if piece == "." or not self.is_friendly(piece, self.current_player):
+        if piece == Piece.EMPTY or not self.is_friendly(piece, self.current_player):
             return []
 
-        piece_type = piece.upper()
-        if piece_type == "P":
-            moves = self._get_pawn_moves(row, col)
-        elif piece_type == "N":
-            moves = self._get_knight_moves(row, col)
-        elif piece_type == "B":
-            moves = self._get_bishop_moves(row, col)
-        elif piece_type == "R":
-            moves = self._get_rook_moves(row, col)
-        elif piece_type == "Q":
-            moves = self._get_queen_moves(row, col)
-        elif piece_type == "K":
-            moves = self._get_king_moves(row, col)
-        else:
-            moves = []
+        match piece:
+            case Piece.WHITE_PAWN | Piece.BLACK_PAWN:
+                moves = self._get_pawn_moves(row, col)
+            case Piece.WHITE_KNIGHT | Piece.BLACK_KNIGHT:
+                moves = self._get_knight_moves(row, col)
+            case Piece.WHITE_BISHOP | Piece.BLACK_BISHOP:
+                moves = self._get_bishop_moves(row, col)
+            case Piece.WHITE_ROOK | Piece.BLACK_ROOK:
+                moves = self._get_rook_moves(row, col)
+            case Piece.WHITE_QUEEN | Piece.BLACK_QUEEN:
+                moves = self._get_queen_moves(row, col)
+            case Piece.WHITE_KING | Piece.BLACK_KING:
+                moves = self._get_king_moves(row, col)
+            case _:
+                moves = []
 
         if not check_legal:
             return moves
@@ -133,15 +256,17 @@ class Minichess:
         if self.current_player == 1:
             direction = -1
             promotion_row = 0
+            promotions = _WHITE_PROMOTIONS
         else:
             direction = 1
             promotion_row = 4
+            promotions = _BLACK_PROMOTIONS
 
         new_row = row + direction
 
-        if 0 <= new_row < 5 and self.board[new_row, col] == ".":
+        if 0 <= new_row < 5 and self.board[new_row, col] == Piece.EMPTY:
             if new_row == promotion_row:
-                for promo in ["Q", "R", "B", "N"]:
+                for promo in promotions:
                     moves.append(
                         Move((row, col), (new_row, col), piece, promotion=promo)
                     )
@@ -152,9 +277,9 @@ class Minichess:
             new_col = col + dc
             if 0 <= new_row < 5 and 0 <= new_col < 5:
                 target = self.board[new_row, new_col]
-                if target != "." and self.is_enemy(target, self.current_player):
+                if target != Piece.EMPTY and self.is_enemy(target, self.current_player):
                     if new_row == promotion_row:
-                        for promo in ["Q", "R", "B", "N"]:
+                        for promo in promotions:
                             moves.append(
                                 Move(
                                     (row, col),
@@ -186,13 +311,13 @@ class Minichess:
             nr, nc = row + dr, col + dc
             if 0 <= nr < 5 and 0 <= nc < 5:
                 target = self.board[nr, nc]
-                if target == "." or self.is_enemy(target, self.current_player):
+                if target == Piece.EMPTY or self.is_enemy(target, self.current_player):
                     moves.append(
                         Move(
                             (row, col),
                             (nr, nc),
                             piece,
-                            captured=None if target == "." else target,
+                            captured=None if target == Piece.EMPTY else target,
                         )
                     )
         return moves
@@ -208,7 +333,7 @@ class Minichess:
                 if not (0 <= nr < 5 and 0 <= nc < 5):
                     break
                 target = self.board[nr, nc]
-                if target == ".":
+                if target == Piece.EMPTY:
                     moves.append(Move((row, col), (nr, nc), piece))
                 elif self.is_enemy(target, self.current_player):
                     moves.append(Move((row, col), (nr, nc), piece, captured=target))
@@ -249,13 +374,15 @@ class Minichess:
                 nr, nc = row + dr, col + dc
                 if 0 <= nr < 5 and 0 <= nc < 5:
                     target = self.board[nr, nc]
-                    if target == "." or self.is_enemy(target, self.current_player):
+                    if target == Piece.EMPTY or self.is_enemy(
+                        target, self.current_player
+                    ):
                         moves.append(
                             Move(
                                 (row, col),
                                 (nr, nc),
                                 piece,
-                                captured=None if target == "." else target,
+                                captured=None if target == Piece.EMPTY else target,
                             )
                         )
         return moves
@@ -265,12 +392,14 @@ class Minichess:
         for row in range(5):
             for col in range(5):
                 piece = self.board[row, col]
-                if piece != "." and self.is_friendly(piece, self.current_player):
+                if piece != Piece.EMPTY and self.is_friendly(
+                    piece, self.current_player
+                ):
                     moves.extend(self.get_piece_moves(row, col))
         return moves
 
     def _find_king(self, player: int):
-        king = "K" if player == 1 else "k"
+        king = Piece.WHITE_KING if player == 1 else Piece.BLACK_KING
         positions = np.argwhere(self.board == king)
         return tuple(positions[0]) if len(positions) else None
 
@@ -281,7 +410,7 @@ class Minichess:
             for r in range(5):
                 for c in range(5):
                     piece = self.board[r, c]
-                    if piece != "." and self.is_friendly(piece, by_player):
+                    if piece != Piece.EMPTY and self.is_friendly(piece, by_player):
                         for move in self.get_piece_moves(r, c, check_legal=False):
                             if move.end == (row, col):
                                 return True
@@ -298,13 +427,9 @@ class Minichess:
     def _make_move_internal(self, move: Move):
         sr, sc = move.start
         er, ec = move.end
-        piece = (
-            move.promotion
-            if move.promotion and self.current_player == 1
-            else move.promotion.lower() if move.promotion else self.board[sr, sc]
-        )
+        piece = move.promotion if move.promotion else self.board[sr, sc]
         self.board[er, ec] = piece
-        self.board[sr, sc] = "."
+        self.board[sr, sc] = Piece.EMPTY
 
     def make_move(self, move: Move):
         if self.game_over:
@@ -312,7 +437,7 @@ class Minichess:
 
         reward = 0
         if move.captured:
-            reward = abs(self.PIECE_VALUES.get(move.captured, 0)) / 100
+            reward = abs(move.captured.get_value(True)) / 100
         if move.promotion:
             reward += 5
 
@@ -361,11 +486,11 @@ class Minichess:
         for row in range(5):
             for col in range(5):
                 piece = self.board[row, col]
-                if piece == ".":
+                if piece == Piece.EMPTY:
                     continue
                 multiplier = 1 if self.is_friendly(piece, player) else -1
-                score += multiplier * abs(self.PIECE_VALUES.get(piece, 0))
-                if piece.upper() in ["B", "R", "Q", "K"]:
+                score += multiplier * abs(piece.get_value(True))
+                if piece in _SLIDING_PIECES:
                     score += multiplier * center_table[row, col] * 2
 
         original_player = self.current_player
@@ -383,5 +508,6 @@ class Minichess:
     def print_board(self):
         print("\n  a b c d e")
         for r in range(5):
-            print(f"{5-r} " + " ".join(self.board[r]) + f" {5-r}")
+            row_str = " ".join(p.to_string() for p in self.board[r])
+            print(f"{5-r} {row_str} {5-r}")
         print("  a b c d e\n")

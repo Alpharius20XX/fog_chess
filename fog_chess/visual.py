@@ -1,23 +1,25 @@
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+from .chess import Piece
+
+
+_PIECE_SYMBOLS = {
+    Piece.WHITE_KING: "♚",
+    Piece.WHITE_QUEEN: "♛",
+    Piece.WHITE_ROOK: "♜",
+    Piece.WHITE_BISHOP: "♝",
+    Piece.WHITE_KNIGHT: "♞",
+    Piece.WHITE_PAWN: "♟",
+    Piece.BLACK_KING: "♚",
+    Piece.BLACK_QUEEN: "♛",
+    Piece.BLACK_ROOK: "♜",
+    Piece.BLACK_BISHOP: "♝",
+    Piece.BLACK_KNIGHT: "♞",
+    Piece.BLACK_PAWN: "♟",
+}
 
 
 def visualize_board(board, title="Minichess Board", last_move=None, pause=0.8):
-    piece_symbols = {
-        "K": "♚",
-        "Q": "♛",
-        "R": "♜",
-        "B": "♝",
-        "N": "♞",
-        "P": "♟",
-        "k": "♚",
-        "q": "♛",
-        "r": "♜",
-        "b": "♝",
-        "n": "♞",
-        "p": "♟",
-    }
-
     fig, ax = plt.subplots(figsize=(5, 5))
     for row in range(5):
         for col in range(5):
@@ -28,15 +30,15 @@ def visualize_board(board, title="Minichess Board", last_move=None, pause=0.8):
                 colour = "#BACA44"
             ax.add_patch(Rectangle((col, 4 - row), 1, 1, facecolor=colour))
             piece = board[row, col]
-            if piece != ".":
+            if piece != Piece.EMPTY:
                 ax.text(
                     col + 0.5,
                     4 - row + 0.5,
-                    piece_symbols.get(piece, piece),  # type: ignore
+                    _PIECE_SYMBOLS.get(piece, piece.to_string()),
                     ha="center",
                     va="center",
                     fontsize=34,
-                    color="white" if piece.isupper() else "black",
+                    color="white" if piece.is_white() else "black",
                 )
 
     for i in range(5):

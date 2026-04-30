@@ -66,7 +66,10 @@ def parse_move_input(text, valid_moves):
 
             for move in valid_moves:
                 if move.start == (sr, sc) and move.end == (er, ec):
-                    if promotion is None or move.promotion == promotion:
+                    if promotion is None or (
+                        move.promotion is not None
+                        and move.promotion.to_string().upper() == promotion
+                    ):
                         return move
         except Exception:
             return None
