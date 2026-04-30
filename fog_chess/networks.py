@@ -272,3 +272,90 @@ class FogChessNet(nn.Module):
         """Reconstruct all MASK tokens in one pass, then run the full forward pass."""
         determinized = self.reconstruct_masks(fog_log, action_indices, temperature)
         return self.forward(determinized, action_indices)
+
+    @torch.no_grad()
+    def reconstruct_masks_batch(
+        self,
+        fog_log: List[Tuple[int, int, int]],
+        action_indices: List[Tuple[int, int]],
+        n_samples: int,
+        temperature: float = 1.0,
+    ) -> List[List[Tuple[int, int, int]]]:
+        """Sample n_samples independent reconstructions using a single encoder pass."""
+        pending = [i for i, (_, _, p) in enumerate(fog_log) if p == 0]
+        if not pending:
+            return [list(fog_log) for _ in range(n_samples)]
+
+        tokens, _ = self.encoder.embed(fog_log, action_indices)
+        hidden = self.encoder(tokens.unsqueeze(0))[0]  # [seq_len, d_model]
+
+        piece_probs = [
+            F.softmax(self.mask_predictor(hidden[i + 1]) / temperature, dim=-1)
+            for i in pending
+        ]
+
+        results = []
+        for _ in range(n_samples):
+            det = list(fog_log)
+            for fog_idx, probs in zip(pending, piece_probs):
+                sampled = int(torch.multinomial(probs, 1).item())
+                turn, sq, _ = det[fog_idx]
+                det[fog_idx] = (turn, sq, sampled)
+            results.append(det)
+        return results
+
+    def forward_batch(
+        self,
+        batch: List[Tuple[List[Tuple[int, int, int]], List[Tuple[int, int]]]],
+    ) -> List[ForwardOutput]:
+        """Batched forward pass over variable-length sequences using key-padding mask."""
+        if not batch:
+            return []
+        if len(batch) == 1:
+            fog_log, action_indices = batch[0]
+            return [self.forward(fog_log, action_indices)]
+
+        token_seqs: List[torch.Tensor] = []
+        n_fogs: List[int] = []
+        for fog_log, action_indices in batch:
+            tokens, _ = self.encoder.embed(fog_log, action_indices)
+            token_seqs.append(tokens)
+            n_fogs.append(len(fog_log))
+
+        device = token_seqs[0].device
+        batch_size = len(batch)
+        max_len = max(t.shape[0] for t in token_seqs)
+
+        padded = torch.zeros(batch_size, max_len, self.encoder.d_model, device=device)
+        key_padding_mask = torch.ones(batch_size, max_len, dtype=torch.bool, device=device)
+        for i, t in enumerate(token_seqs):
+            padded[i, : t.shape[0]] = t
+            key_padding_mask[i, : t.shape[0]] = False
+
+        hidden_batch = self.encoder.transformer(
+            padded, src_key_padding_mask=key_padding_mask
+        )
+
+        outputs: List[ForwardOutput] = []
+        for i, (fog_log, action_indices) in enumerate(batch):
+            n_fog = n_fogs[i]
+            n_act = len(action_indices)
+            h = hidden_batch[i, : 1 + n_fog + n_act]
+            value = self.value_head(h[0:1]).squeeze(0)
+            action_log_probs = self.policy_head(h[1 + n_fog :].unsqueeze(0)).squeeze(0)
+            outputs.append(
+                ForwardOutput(value=value, action_log_probs=action_log_probs, hidden=h)
+            )
+        return outputs
+
+    def forward_with_reconstruction_batch(
+        self,
+        batch: List[Tuple[List[Tuple[int, int, int]], List[Tuple[int, int]]]],
+        temperature: float = 1.0,
+    ) -> List[ForwardOutput]:
+        """Reconstruct masks for each item independently, then run a single batched forward."""
+        determinized = [
+            (self.reconstruct_masks(fog_log, action_indices, temperature), action_indices)
+            for fog_log, action_indices in batch
+        ]
+        return self.forward_batch(determinized)

@@ -33,24 +33,65 @@ from .chess import Minichess, Move
 from .networks import FogChessNet
 
 
-def rollout_to_terminal(game: Minichess, net: FogChessNet, for_player: int) -> float:
-    """Roll out `game` to terminal using the policy. Returns +1 / -1 / 0."""
-    game = game.copy()
-    while not game.game_over:
-        current = game.current_player
-        fog_log = game.get_fog_log(current)
-        moves, action_indices = game.get_legal_moves_and_indices(current)
-        if not moves:
+def rollout_to_terminal_batch(
+    games: List[Minichess],
+    net: FogChessNet,
+    for_player: int,
+    max_depth: Optional[int] = None,
+) -> List[float]:
+    """Roll out multiple games in parallel using batched inference.
+
+    Stops at terminal or after max_depth turns (per game). When capped by
+    depth, the outcome is 0 (draw) for unfinished games.
+    """
+    games = [g.copy() for g in games]
+    n = len(games)
+    outcomes = [0.0] * n
+    active = list(range(n))
+    depths = [0] * n
+
+    while active:
+        need_move = []
+        finished = []
+
+        for idx in active:
+            g = games[idx]
+            if g.game_over:
+                finished.append(idx)
+                continue
+            if max_depth is not None and depths[idx] >= max_depth:
+                finished.append(idx)
+                continue
+            current = g.current_player
+            fog_log = g.get_fog_log(current)
+            moves, action_indices = g.get_legal_moves_and_indices(current)
+            if not moves:
+                finished.append(idx)
+            else:
+                need_move.append((idx, g, fog_log, moves, action_indices))
+
+        for idx in finished:
+            active.remove(idx)
+            g = games[idx]
+            if g.winner == for_player:
+                outcomes[idx] = 1.0
+            elif g.winner == 3 - for_player:
+                outcomes[idx] = -1.0
+
+        if not need_move:
             break
+
         with torch.no_grad():
-            out = net.forward_with_reconstruction(fog_log, action_indices)
+            outputs = net.forward_with_reconstruction_batch(
+                [(fl, ai) for _, _, fl, _, ai in need_move]
+            )
+
+        for (idx, g, _, moves, _), out in zip(need_move, outputs):
             action_idx = int(torch.multinomial(out.action_log_probs.exp(), 1).item())
-        game.make_move(moves[action_idx])
-    if game.winner == for_player:
-        return 1.0
-    if game.winner == 3 - for_player:
-        return -1.0
-    return 0.0
+            g.make_move(moves[action_idx])
+            depths[idx] += 1
+
+    return outcomes
 
 
 def mc_action_search(
@@ -61,21 +102,28 @@ def mc_action_search(
     action_indices: List[Tuple[int, int]],
     k_samples: int,
     player: int,
+    max_depth: Optional[int] = None,
 ) -> torch.Tensor:
-    """Run k_samples MC rollouts and return a softmax distribution over action_indices."""
+    """Run k_samples MC rollouts with batched inference."""
     n_actions = len(action_indices)
+
+    # One encoder pass samples k_samples determinizations; one batched forward scores them.
+    with torch.no_grad():
+        det_logs = net.reconstruct_masks_batch(fog_log, action_indices, k_samples)
+        outputs = net.forward_batch([(det, action_indices) for det in det_logs])
+    sampled = [
+        int(torch.multinomial(out.action_log_probs.exp(), 1).item()) for out in outputs
+    ]
+
+    game_copies = [game.copy() for _ in range(k_samples)]
+    for gc, action_idx in zip(game_copies, sampled):
+        gc.make_move(moves[action_idx])
+
+    outcomes = rollout_to_terminal_batch(game_copies, net, player, max_depth)
+
     action_returns = torch.zeros(n_actions)
     action_counts = torch.zeros(n_actions)
-
-    for _ in range(k_samples):
-        with torch.no_grad():
-            out = net.forward_with_reconstruction(fog_log, action_indices)
-            action_idx = int(torch.multinomial(out.action_log_probs.exp(), 1).item())
-
-        game_copy = game.copy()
-        game_copy.make_move(moves[action_idx])
-        outcome = rollout_to_terminal(game_copy, net, player)
-
+    for action_idx, outcome in zip(sampled, outcomes):
         action_returns[action_idx] += outcome
         action_counts[action_idx] += 1
 
@@ -98,7 +146,10 @@ Step = Tuple[
 
 
 def self_play_game(
-    rollout_net: FogChessNet, k_samples: int, mc_prob: float
+    rollout_net: FogChessNet,
+    k_samples: int,
+    mc_prob: float,
+    mc_rollout_depth: Optional[int] = None,
 ) -> Tuple[List[Step], Minichess]:
     """Play one game with the EMA target network for both action selection and rollouts."""
     game = Minichess()
@@ -112,11 +163,6 @@ def self_play_game(
         if not moves:
             break
 
-        print(
-            f"  [{_ts()}] move {move_num} player={player} actions={len(moves)}",
-            flush=True,
-        )
-
         true_mask_pieces: Dict[int, int] = {
             sq: game.board[sq // 5, sq % 5].value for _, sq, p in fog_log if p == 0
         }
@@ -124,13 +170,22 @@ def self_play_game(
         use_mc = random.random() < mc_prob
         if use_mc:
             improved_probs = mc_action_search(
-                game, rollout_net, fog_log, moves, action_indices, k_samples, player
+                game,
+                rollout_net,
+                fog_log,
+                moves,
+                action_indices,
+                k_samples,
+                player,
+                mc_rollout_depth,
             )
             action_idx = int(torch.multinomial(improved_probs, 1).item())
         else:
             with torch.no_grad():
                 out = rollout_net.forward_with_reconstruction(fog_log, action_indices)
-                action_idx = int(torch.multinomial(out.action_log_probs.exp(), 1).item())
+                action_idx = int(
+                    torch.multinomial(out.action_log_probs.exp(), 1).item()
+                )
             improved_probs = out.action_log_probs.exp()
 
         trajectory.append(
@@ -163,7 +218,14 @@ def compute_losses(
     value_losses: List[torch.Tensor] = []
     mask_losses: List[torch.Tensor] = []
 
-    for fog_log, action_indices, improved_probs, player, true_mask_pieces, has_mc in trajectory:
+    for (
+        fog_log,
+        action_indices,
+        improved_probs,
+        player,
+        true_mask_pieces,
+        has_mc,
+    ) in trajectory:
         out = net.forward(fog_log, action_indices)
 
         z = torch.tensor(player_outcome[player])
@@ -183,7 +245,9 @@ def compute_losses(
             )
             mask_losses.append(F.cross_entropy(mask_logits, true_pieces))
 
-    mean_policy = torch.stack(policy_losses).mean() if policy_losses else torch.tensor(0.0)
+    mean_policy = (
+        torch.stack(policy_losses).mean() if policy_losses else torch.tensor(0.0)
+    )
     mean_value = torch.stack(value_losses).mean()
     mean_mask = torch.stack(mask_losses).mean() if mask_losses else torch.tensor(0.0)
     total = c_policy * mean_policy + c_value * mean_value + c_mask * mean_mask
@@ -268,6 +332,7 @@ def train(cfg: dict):
 
     k_samples: int = tcfg["k_samples"]
     mc_prob: float = tcfg.get("mc_prob", 0.1)
+    mc_rollout_depth: Optional[int] = tcfg.get("mc_rollout_depth", None)
     num_iterations: int = tcfg.get("num_iterations", 1000)
     ema_decay: float = tcfg.get("target_ema", 0.995)
     grad_clip: float = tcfg.get("grad_clip", 1.0)
@@ -285,17 +350,11 @@ def train(cfg: dict):
     replay_buffer: Deque[Tuple[List[Step], Minichess]] = deque(maxlen=buffer_size)
 
     for iteration in range(num_iterations):
-        print(
-            f"[{_ts()}] iter {iteration}: collecting {games_per_update} self-play games",
-            flush=True,
-        )
         t0 = time.time()
         for g_idx in range(games_per_update):
-            print(
-                f"[{_ts()}] iter {iteration}: game {g_idx + 1}/{games_per_update}",
-                flush=True,
+            trajectory, game = self_play_game(
+                target_net, k_samples, mc_prob, mc_rollout_depth
             )
-            trajectory, game = self_play_game(target_net, k_samples, mc_prob)
             if trajectory:
                 replay_buffer.append((trajectory, game))
         print(

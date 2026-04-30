@@ -6,7 +6,7 @@ model:
   dropout: 0.1
 
 train:
-  k_samples: 24
+  k_samples: 8
   lr: 0.0001
   warmup_steps: 200
   grad_clip: 1.0
@@ -14,7 +14,8 @@ train:
   c_policy: 1.0
   c_value: 1.0
   c_mask: 1.0
-  mc_prob: 0.1
+  mc_prob: 0.5
+  mc_rollout_depth: 10  # null = roll out to terminal
   games_per_update: 4
   buffer_size: 128
   train_games_per_step: 8
