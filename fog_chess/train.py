@@ -93,11 +93,12 @@ Step = Tuple[
     torch.Tensor,  # improved_probs [n_actions]
     int,  # player (1 or 2)
     Dict[int, int],  # sq -> true piece.value for each UNKNOWN square
+    bool,  # whether MC search was run (policy loss only applied when True)
 ]
 
 
 def self_play_game(
-    rollout_net: FogChessNet, k_samples: int
+    rollout_net: FogChessNet, k_samples: int, mc_prob: float
 ) -> Tuple[List[Step], Minichess]:
     """Play one game with the EMA target network for both action selection and rollouts."""
     game = Minichess()
@@ -120,14 +121,22 @@ def self_play_game(
             sq: game.board[sq // 5, sq % 5].value for _, sq, p in fog_log if p == 0
         }
 
-        improved_probs = mc_action_search(
-            game, rollout_net, fog_log, moves, action_indices, k_samples, player
-        )
+        use_mc = random.random() < mc_prob
+        if use_mc:
+            improved_probs = mc_action_search(
+                game, rollout_net, fog_log, moves, action_indices, k_samples, player
+            )
+            action_idx = int(torch.multinomial(improved_probs, 1).item())
+        else:
+            with torch.no_grad():
+                out = rollout_net.forward_with_reconstruction(fog_log, action_indices)
+                action_idx = int(torch.multinomial(out.action_log_probs.exp(), 1).item())
+            improved_probs = out.action_log_probs.exp()
+
         trajectory.append(
-            (fog_log, action_indices, improved_probs, player, true_mask_pieces)
+            (fog_log, action_indices, improved_probs, player, true_mask_pieces, use_mc)
         )
 
-        action_idx = int(torch.multinomial(improved_probs, 1).item())
         game.make_move(moves[action_idx])
         move_num += 1
 
@@ -154,15 +163,16 @@ def compute_losses(
     value_losses: List[torch.Tensor] = []
     mask_losses: List[torch.Tensor] = []
 
-    for fog_log, action_indices, improved_probs, player, true_mask_pieces in trajectory:
+    for fog_log, action_indices, improved_probs, player, true_mask_pieces, has_mc in trajectory:
         out = net.forward(fog_log, action_indices)
 
         z = torch.tensor(player_outcome[player])
         loss_value = F.mse_loss(torch.sigmoid(out.value), (z + 1.0) / 2.0)
-        loss_policy = -(improved_probs.detach() * out.action_log_probs).mean()
-
         value_losses.append(loss_value)
-        policy_losses.append(loss_policy)
+
+        if has_mc:
+            loss_policy = -(improved_probs.detach() * out.action_log_probs).mean()
+            policy_losses.append(loss_policy)
 
         mask_positions = [i + 1 for i, (_, _, p) in enumerate(fog_log) if p == 0]
         if mask_positions:
@@ -173,7 +183,7 @@ def compute_losses(
             )
             mask_losses.append(F.cross_entropy(mask_logits, true_pieces))
 
-    mean_policy = torch.stack(policy_losses).mean()
+    mean_policy = torch.stack(policy_losses).mean() if policy_losses else torch.tensor(0.0)
     mean_value = torch.stack(value_losses).mean()
     mean_mask = torch.stack(mask_losses).mean() if mask_losses else torch.tensor(0.0)
     total = c_policy * mean_policy + c_value * mean_value + c_mask * mean_mask
@@ -257,6 +267,7 @@ def train(cfg: dict):
     )
 
     k_samples: int = tcfg["k_samples"]
+    mc_prob: float = tcfg.get("mc_prob", 0.1)
     num_iterations: int = tcfg.get("num_iterations", 1000)
     ema_decay: float = tcfg.get("target_ema", 0.995)
     grad_clip: float = tcfg.get("grad_clip", 1.0)
@@ -284,7 +295,7 @@ def train(cfg: dict):
                 f"[{_ts()}] iter {iteration}: game {g_idx + 1}/{games_per_update}",
                 flush=True,
             )
-            trajectory, game = self_play_game(target_net, k_samples)
+            trajectory, game = self_play_game(target_net, k_samples, mc_prob)
             if trajectory:
                 replay_buffer.append((trajectory, game))
         print(
