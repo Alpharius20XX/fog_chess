@@ -10,6 +10,24 @@ conda activate fog_chess
 pip install -r requirements.txt
 ```
 
+## File structure
+
+```
+fog_chess/
+├── fog_chess/
+│   ├── chess.py      # Minichess rules, fog observations, rewards, environment step
+│   ├── rl.py         # Memory-based tabular Q-learning training and evaluation
+│   ├── app.py        # Streamlit UI for playing against the trained model
+│   ├── human.py      # Terminal two-player helper and move parsing
+│   ├── visual.py     # Matplotlib board visualization helper
+│   └── __init__.py
+├── logs/             # Training logs
+├── models/           # Saved Q-table checkpoints
+├── notebooks/        # Interactive notebooks
+├── requirements.txt
+└── README.md
+```
+
 # Train and play
 
 Train a fog-observation Q-learning model:
@@ -20,6 +38,105 @@ python -m fog_chess.rl --episodes 5000 --seed 7 --report-every 100 --eval-games 
 
 The Q-learning state uses each player's memory board: visible squares update the
 memory, and hidden squares keep the last remembered piece or empty square.
+
+## Algorithm summary
+
+```mermaid
+flowchart LR
+    A[True minichess board] --> B[Fog observation for current player]
+    B --> C[Player memory board]
+    C --> D[State key: 25 piece values]
+    D --> E[Q-table for current side]
+    E --> F[Epsilon-greedy legal move]
+    F --> G[Environment step]
+    G --> H[Reward and next observation]
+    H --> C
+    H --> I[Q-learning update]
+    I --> E
+```
+
+- We train two tabular Q-learning agents by self-play: one Q-table for White and
+  one Q-table for Black.
+- The game is imperfect-information minichess. The agent does not receive the
+  full board; it receives a fog observation.
+- The state is a memory board, not just the current observation. Visible squares
+  overwrite memory; hidden squares keep their last known value.
+- The true board is still used by the environment to check legal moves,
+  captures, checkmate, and draws.
+- Action selection is epsilon-greedy over legal moves only.
+- During training, the best checkpoint is selected by evaluation against random
+  opponents.
+
+Key equations:
+
+```
+memory_t[square] =
+    observation_t[square], if visible
+    memory_{t-1}[square],  if hidden
+```
+
+```
+Q(s, a) <- Q(s, a) + alpha * (reward + gamma * max_a' Q(s', a') - Q(s, a))
+```
+
+```
+alpha:   0.20 -> 0.05
+epsilon: 0.40 -> 0.05
+gamma:   0.95
+```
+
+Reward:
+
+```
+capture normal piece = piece_value / 100
+promotion            = +5
+checkmate            = +500
+king capture         = +500
+draw                 = 0
+```
+
+## Current results
+
+Current run: `logs/fog_q_learning5000.log`, through episode `3900`.
+
+```
+self_play white_win / black_win / draw = 12.2 / 12.8 / 75.0
+white_eval_vs_random decisive_win / win - loss - draw = 50.7 | 12.7 - 12.3 - 75.0
+black_eval_vs_random decisive_win / win - loss - draw = 63.6 | 16.3 - 9.3 - 74.3
+best_score = 67.3 at episode 2400
+q_states white/black = 123868 / 124778
+```
+
+`decisive_win` means `wins / (wins + losses)`, so draws are excluded from that
+percentage.
+
+## Conclusion and outlooks
+
+The current system supports fog-of-war minichess with memory-based tabular
+Q-learning and a playable UI. The memory board makes the policy more realistic
+for imperfect information because the agent can remember previously observed
+pieces even after they leave visibility.
+
+Main limitations:
+
+- The policy is still tabular, so it does not generalize well across similar
+  positions.
+- The memory is deterministic last-seen memory, not a probabilistic belief over
+  possible hidden states.
+- Self-play is non-stationary: both agents learn at the same time, so evaluation
+  can fluctuate.
+- The draw rate is high, so decisive-win metrics can be noisy unless evaluation
+  uses many games.
+
+Possible next steps:
+
+- Replace tabular Q-learning with a neural policy/value model.
+- Use belief-state tracking for hidden pieces instead of single last-seen memory.
+- Add stronger baselines, such as minimax on visible information or scripted
+  heuristic agents.
+- Train with larger evaluation batches and save the best checkpoint by a more
+  stable metric.
+- Add tests for fog visibility, memory updates, legal moves, and UI game flow.
 
 Play against the trained model:
 
