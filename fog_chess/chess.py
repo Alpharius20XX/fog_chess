@@ -101,11 +101,13 @@ class Move:
     promotion: Optional[Piece] = None
     is_check: bool = False
     is_checkmate: bool = False
+    is_en_passant: bool = False
+    is_castling: bool = False
 
-    def to_notation(self) -> str:
-        cols = "abcde"
-        s = f"{cols[self.start[1]]}{5 - self.start[0]}"
-        e = f"{cols[self.end[1]]}{5 - self.end[0]}"
+    def to_notation(self, board_size: int = 5) -> str:
+        cols = "abcdefgh"[:board_size]
+        s = f"{cols[self.start[1]]}{board_size - self.start[0]}"
+        e = f"{cols[self.end[1]]}{board_size - self.end[0]}"
         notation = f"{s}{e}"
         if self.promotion:
             notation += f"={self.promotion.to_string().upper()}"
@@ -144,8 +146,10 @@ _BLACK_PROMOTIONS = [
 
 
 class Minichess:
-    def __init__(self):
-        self.board_size = 5
+    def __init__(self, board_size: int = 5, max_moves: int = 100, points_tiebreak: bool = False):
+        self.board_size = board_size
+        self.max_moves = max_moves
+        self.points_tiebreak = points_tiebreak
         self.reset()
 
     def reset(self):
@@ -193,16 +197,20 @@ class Minichess:
         self._fog_state_cache: dict = {1: None, 2: None}
         return self.get_state()
 
+    def _make_fresh_game(self) -> "Minichess":
+        return Minichess(max_moves=self.max_moves, points_tiebreak=self.points_tiebreak)
+
     def get_state(self):
         return tuple(tuple(row) for row in self.board)
 
     def get_fog_state(self, player: int):
+        bs = self.board_size
         visible: set = set()
         original_player = self.current_player
         self.current_player = player
         try:
-            for row in range(5):
-                for col in range(5):
+            for row in range(bs):
+                for col in range(bs):
                     piece = self.board[row, col]
                     if piece != Piece.EMPTY and self.is_friendly(piece, player):
                         visible.add((row, col))
@@ -211,26 +219,28 @@ class Minichess:
         finally:
             self.current_player = original_player
 
-        fog_board = np.empty((5, 5), dtype=object)
-        for row in range(5):
-            for col in range(5):
+        fog_board = np.empty((bs, bs), dtype=object)
+        for row in range(bs):
+            for col in range(bs):
                 fog_board[row, col] = self.board[row, col] if (row, col) in visible else Piece.UNKNOWN
         return tuple(tuple(r) for r in fog_board)
 
     def get_fog_log(self, player: int) -> List[Tuple[int, int, int]]:
+        bs = self.board_size
         self._ensure_fog_cache()
         fog_state = self._fog_state_cache[player]
         turn = self.move_count
         unknowns = [
-            (turn, row * 5 + col, 0)
-            for row in range(5)
-            for col in range(5)
+            (turn, row * bs + col, 0)
+            for row in range(bs)
+            for col in range(bs)
             if fog_state[row][col] == Piece.UNKNOWN
         ]
         return self._fog_base_log[player] + unknowns
 
     def get_log(self) -> List[Tuple[int, int, int]]:
-        replay = Minichess()
+        bs = self.board_size
+        replay = self._make_fresh_game()
         states = [replay.get_state()]
 
         for move in self.move_history:
@@ -241,9 +251,9 @@ class Minichess:
         log = []
         for turn, state in enumerate(states):
             prev = states[turn - 1] if turn > 0 else None
-            for row in range(5):
-                for col in range(5):
-                    sq = row * 5 + col
+            for row in range(bs):
+                for col in range(bs):
+                    sq = row * bs + col
                     piece = state[row][col]
                     if turn == 0:
                         log.append((turn, sq, piece.value))
@@ -253,31 +263,34 @@ class Minichess:
         return log
 
     def get_legal_move_indices(self, player: int) -> List[Tuple[int, int]]:
+        bs = self.board_size
         original_player = self.current_player
         self.current_player = player
         try:
             moves = self.get_all_valid_moves()
         finally:
             self.current_player = original_player
-        return [(m.start[0] * 5 + m.start[1], m.end[0] * 5 + m.end[1]) for m in moves]
+        return [(m.start[0] * bs + m.start[1], m.end[0] * bs + m.end[1]) for m in moves]
 
     def get_legal_moves_and_indices(
         self, player: int
     ) -> Tuple[List["Move"], List[Tuple[int, int]]]:
         """Return (moves, action_indices) together to avoid computing valid moves twice."""
+        bs = self.board_size
         original_player = self.current_player
         self.current_player = player
         try:
             moves = self.get_all_valid_moves()
         finally:
             self.current_player = original_player
-        indices = [(m.start[0] * 5 + m.start[1], m.end[0] * 5 + m.end[1]) for m in moves]
+        indices = [(m.start[0] * bs + m.start[1], m.end[0] * bs + m.end[1]) for m in moves]
         return moves, indices
 
     def _ensure_fog_cache(self):
         if self._fog_cache_initialized:
             return
-        replay = Minichess()
+        bs = self.board_size
+        replay = self._make_fresh_game()
         fog_states = {p: [replay.get_fog_state(p)] for p in (1, 2)}
         for move in self.move_history:
             replay._make_move_internal(move)
@@ -289,9 +302,9 @@ class Minichess:
             base_log = []
             for turn, state in enumerate(states):
                 prev = states[turn - 1] if turn > 0 else None
-                for row in range(5):
-                    for col in range(5):
-                        sq = row * 5 + col
+                for row in range(bs):
+                    for col in range(bs):
+                        sq = row * bs + col
                         piece = state[row][col]
                         if turn == 0:
                             if piece != Piece.UNKNOWN:
@@ -305,8 +318,10 @@ class Minichess:
         self._fog_cache_initialized = True
 
     def copy(self):
-        new_game = object.__new__(Minichess)
-        new_game.board_size = 5
+        new_game = object.__new__(type(self))
+        new_game.board_size = self.board_size
+        new_game.max_moves = self.max_moves
+        new_game.points_tiebreak = self.points_tiebreak
         new_game.board = self.board.copy()
         new_game.current_player = self.current_player
         new_game.game_over = self.game_over
@@ -318,9 +333,8 @@ class Minichess:
         new_game._fog_state_cache = {1: None, 2: None}
         return new_game
 
-    @staticmethod
-    def sq_to_rc(sq: int) -> Tuple[int, int]:
-        return sq // 5, sq % 5
+    def sq_to_rc(self, sq: int) -> Tuple[int, int]:
+        return sq // self.board_size, sq % self.board_size
 
     @staticmethod
     def is_white_piece(piece: Piece) -> bool:
@@ -373,6 +387,7 @@ class Minichess:
     def _get_pawn_moves(self, row: int, col: int) -> List[Move]:
         moves = []
         piece = self.board[row, col]
+        bs = self.board_size
 
         if self.current_player == 1:
             direction = -1
@@ -380,12 +395,12 @@ class Minichess:
             promotions = _WHITE_PROMOTIONS
         else:
             direction = 1
-            promotion_row = 4
+            promotion_row = bs - 1
             promotions = _BLACK_PROMOTIONS
 
         new_row = row + direction
 
-        if 0 <= new_row < 5 and self.board[new_row, col] == Piece.EMPTY:
+        if 0 <= new_row < bs and self.board[new_row, col] == Piece.EMPTY:
             if new_row == promotion_row:
                 for promo in promotions:
                     moves.append(
@@ -396,7 +411,7 @@ class Minichess:
 
         for dc in [-1, 1]:
             new_col = col + dc
-            if 0 <= new_row < 5 and 0 <= new_col < 5:
+            if 0 <= new_row < bs and 0 <= new_col < bs:
                 target = self.board[new_row, new_col]
                 if target != Piece.EMPTY and self.is_enemy(target, self.current_player):
                     if new_row == promotion_row:
@@ -419,6 +434,7 @@ class Minichess:
     def _get_knight_moves(self, row: int, col: int) -> List[Move]:
         moves = []
         piece = self.board[row, col]
+        bs = self.board_size
         for dr, dc in [
             (-2, -1),
             (-2, 1),
@@ -430,7 +446,7 @@ class Minichess:
             (2, 1),
         ]:
             nr, nc = row + dr, col + dc
-            if 0 <= nr < 5 and 0 <= nc < 5:
+            if 0 <= nr < bs and 0 <= nc < bs:
                 target = self.board[nr, nc]
                 if target == Piece.EMPTY or self.is_enemy(target, self.current_player):
                     moves.append(
@@ -448,10 +464,11 @@ class Minichess:
     ) -> List[Move]:
         moves = []
         piece = self.board[row, col]
+        bs = self.board_size
         for dr, dc in directions:
-            for i in range(1, 5):
+            for i in range(1, bs):
                 nr, nc = row + dr * i, col + dc * i
-                if not (0 <= nr < 5 and 0 <= nc < 5):
+                if not (0 <= nr < bs and 0 <= nc < bs):
                     break
                 target = self.board[nr, nc]
                 if target == Piece.EMPTY:
@@ -488,12 +505,13 @@ class Minichess:
     def _get_king_moves(self, row: int, col: int) -> List[Move]:
         moves = []
         piece = self.board[row, col]
+        bs = self.board_size
         for dr in [-1, 0, 1]:
             for dc in [-1, 0, 1]:
                 if dr == 0 and dc == 0:
                     continue
                 nr, nc = row + dr, col + dc
-                if 0 <= nr < 5 and 0 <= nc < 5:
+                if 0 <= nr < bs and 0 <= nc < bs:
                     target = self.board[nr, nc]
                     if target == Piece.EMPTY or self.is_enemy(
                         target, self.current_player
@@ -510,8 +528,9 @@ class Minichess:
 
     def get_all_valid_moves(self) -> List[Move]:
         moves = []
-        for row in range(5):
-            for col in range(5):
+        bs = self.board_size
+        for row in range(bs):
+            for col in range(bs):
                 piece = self.board[row, col]
                 if piece != Piece.EMPTY and self.is_friendly(
                     piece, self.current_player
@@ -528,8 +547,9 @@ class Minichess:
         original_player = self.current_player
         self.current_player = by_player
         try:
-            for r in range(5):
-                for c in range(5):
+            bs = self.board_size
+            for r in range(bs):
+                for c in range(bs):
                     piece = self.board[r, c]
                     if piece != Piece.EMPTY and self.is_friendly(piece, by_player):
                         for move in self.get_piece_moves(r, c, check_legal=False):
@@ -552,6 +572,25 @@ class Minichess:
         self.board[er, ec] = piece
         self.board[sr, sc] = Piece.EMPTY
 
+    def _compute_material_winner(self) -> int:
+        white = sum(
+            abs(self.board[r, c].get_value(True))
+            for r in range(self.board_size)
+            for c in range(self.board_size)
+            if self.board[r, c].is_white()
+        )
+        black = sum(
+            abs(self.board[r, c].get_value(True))
+            for r in range(self.board_size)
+            for c in range(self.board_size)
+            if self.board[r, c].is_black()
+        )
+        if white > black:
+            return 1
+        if black > white:
+            return 2
+        return 0
+
     def make_move(self, move: Move):
         if self.game_over:
             return self.get_state(), 0, True
@@ -568,15 +607,16 @@ class Minichess:
         self.current_player = 3 - self.current_player
 
         if self._fog_cache_initialized:
+            bs = self.board_size
             turn = self.move_count
             for p in (1, 2):
                 prev_fog = self._fog_state_cache[p]
                 new_fog = self.get_fog_state(p)
-                for row in range(5):
-                    for col in range(5):
+                for row in range(bs):
+                    for col in range(bs):
                         piece = new_fog[row][col]
                         if piece != prev_fog[row][col] and piece != Piece.UNKNOWN:
-                            self._fog_base_log[p].append((turn, row * 5 + col, piece.value))
+                            self._fog_base_log[p].append((turn, row * bs + col, piece.value))
                 self._fog_state_cache[p] = new_fog
 
         opponent_moves = self.get_all_valid_moves()
@@ -591,9 +631,12 @@ class Minichess:
                 self.winner = 0
                 reward = 0
 
-        if self.move_count >= 100:
+        if self.move_count >= self.max_moves:
             self.game_over = True
-            self.winner = 0
+            if self.points_tiebreak:
+                self.winner = self._compute_material_winner()
+            else:
+                self.winner = 0
 
         return self.get_state(), reward, self.game_over
 
@@ -605,19 +648,15 @@ class Minichess:
         if self.winner == 0:
             return 0
 
-        score = 0
-        center_table = np.array(
-            [
-                [0, 0, 0, 0, 0],
-                [0, 5, 5, 5, 0],
-                [0, 5, 10, 5, 0],
-                [0, 5, 5, 5, 0],
-                [0, 0, 0, 0, 0],
-            ]
-        )
+        bs = self.board_size
+        center_table = np.zeros((bs, bs), dtype=np.int32)
+        for r in range(bs):
+            for c in range(bs):
+                center_table[r, c] = min(r, bs - 1 - r, c, bs - 1 - c) * 5
 
-        for row in range(5):
-            for col in range(5):
+        score = 0
+        for row in range(bs):
+            for col in range(bs):
                 piece = self.board[row, col]
                 if piece == Piece.EMPTY:
                     continue
@@ -639,8 +678,197 @@ class Minichess:
         return float(score)
 
     def print_board(self):
-        print("\n  a b c d e")
-        for r in range(5):
+        bs = self.board_size
+        cols = "abcdefgh"[:bs]
+        print(f"\n  {' '.join(cols)}")
+        for r in range(bs):
             row_str = " ".join(p.to_string() for p in self.board[r])
-            print(f"{5-r} {row_str} {5-r}")
-        print("  a b c d e\n")
+            print(f"{bs - r} {row_str} {bs - r}")
+        print(f"  {' '.join(cols)}\n")
+
+
+class FullChess(Minichess):
+    """Standard 8×8 chess with castling, en passant, and double pawn push."""
+
+    def __init__(self, max_moves: int = 300, points_tiebreak: bool = False):
+        self.board_size = 8
+        self.max_moves = max_moves
+        self.points_tiebreak = points_tiebreak
+        self.reset()
+
+    def reset(self):
+        self.board = np.array(
+            [
+                [Piece.BLACK_ROOK, Piece.BLACK_KNIGHT, Piece.BLACK_BISHOP, Piece.BLACK_QUEEN,
+                 Piece.BLACK_KING, Piece.BLACK_BISHOP, Piece.BLACK_KNIGHT, Piece.BLACK_ROOK],
+                [Piece.BLACK_PAWN] * 8,
+                [Piece.EMPTY] * 8,
+                [Piece.EMPTY] * 8,
+                [Piece.EMPTY] * 8,
+                [Piece.EMPTY] * 8,
+                [Piece.WHITE_PAWN] * 8,
+                [Piece.WHITE_ROOK, Piece.WHITE_KNIGHT, Piece.WHITE_BISHOP, Piece.WHITE_QUEEN,
+                 Piece.WHITE_KING, Piece.WHITE_BISHOP, Piece.WHITE_KNIGHT, Piece.WHITE_ROOK],
+            ],
+            dtype=object,
+        )
+        self.current_player = 1
+        self.game_over = False
+        self.winner = None
+        self.move_history: List[Move] = []
+        self.move_count = 0
+        self._fog_cache_initialized = False
+        self._fog_base_log: dict = {1: [], 2: []}
+        self._fog_state_cache: dict = {1: None, 2: None}
+        self.en_passant_target: Optional[Tuple[int, int]] = None
+        self.castling_rights = {
+            1: {"kingside": True, "queenside": True},
+            2: {"kingside": True, "queenside": True},
+        }
+        return self.get_state()
+
+    def _make_fresh_game(self) -> "FullChess":
+        return FullChess(max_moves=self.max_moves, points_tiebreak=self.points_tiebreak)
+
+    def copy(self):
+        new_game = super().copy()
+        new_game.en_passant_target = self.en_passant_target
+        new_game.castling_rights = {p: dict(r) for p, r in self.castling_rights.items()}
+        return new_game
+
+    def _make_move_internal(self, move: Move):
+        sr, sc = move.start
+        er, ec = move.end
+        original_piece = self.board[sr, sc]
+        piece = move.promotion if move.promotion else original_piece
+
+        if move.is_en_passant:
+            self.board[sr, ec] = Piece.EMPTY
+
+        if move.is_castling:
+            if ec > sc:  # kingside
+                rook_col = self.board_size - 1
+                rook_end_col = ec - 1
+            else:  # queenside
+                rook_col = 0
+                rook_end_col = ec + 1
+            self.board[sr, rook_end_col] = self.board[sr, rook_col]
+            self.board[sr, rook_col] = Piece.EMPTY
+
+        self.board[er, ec] = piece
+        self.board[sr, sc] = Piece.EMPTY
+
+        # Update en passant target
+        if original_piece in (Piece.WHITE_PAWN, Piece.BLACK_PAWN) and abs(er - sr) == 2:
+            self.en_passant_target = ((sr + er) // 2, sc)
+        else:
+            self.en_passant_target = None
+
+        # Update castling rights
+        if original_piece == Piece.WHITE_KING:
+            self.castling_rights[1] = {"kingside": False, "queenside": False}
+        elif original_piece == Piece.BLACK_KING:
+            self.castling_rights[2] = {"kingside": False, "queenside": False}
+        elif original_piece == Piece.WHITE_ROOK:
+            if sc == 0:
+                self.castling_rights[1]["queenside"] = False
+            elif sc == self.board_size - 1:
+                self.castling_rights[1]["kingside"] = False
+        elif original_piece == Piece.BLACK_ROOK:
+            if sc == 0:
+                self.castling_rights[2]["queenside"] = False
+            elif sc == self.board_size - 1:
+                self.castling_rights[2]["kingside"] = False
+
+    def _get_pawn_moves(self, row: int, col: int) -> List[Move]:
+        moves = []
+        piece = self.board[row, col]
+        bs = self.board_size
+
+        if self.current_player == 1:
+            direction = -1
+            promotion_row = 0
+            start_row = bs - 2
+            promotions = _WHITE_PROMOTIONS
+        else:
+            direction = 1
+            promotion_row = bs - 1
+            start_row = 1
+            promotions = _BLACK_PROMOTIONS
+
+        new_row = row + direction
+
+        if 0 <= new_row < bs and self.board[new_row, col] == Piece.EMPTY:
+            if new_row == promotion_row:
+                for promo in promotions:
+                    moves.append(Move((row, col), (new_row, col), piece, promotion=promo))
+            else:
+                moves.append(Move((row, col), (new_row, col), piece))
+                if row == start_row:
+                    double_row = new_row + direction
+                    if 0 <= double_row < bs and self.board[double_row, col] == Piece.EMPTY:
+                        moves.append(Move((row, col), (double_row, col), piece))
+
+        for dc in [-1, 1]:
+            new_col = col + dc
+            if 0 <= new_row < bs and 0 <= new_col < bs:
+                target = self.board[new_row, new_col]
+                if target != Piece.EMPTY and self.is_enemy(target, self.current_player):
+                    if new_row == promotion_row:
+                        for promo in promotions:
+                            moves.append(
+                                Move((row, col), (new_row, new_col), piece,
+                                     captured=target, promotion=promo)
+                            )
+                    else:
+                        moves.append(
+                            Move((row, col), (new_row, new_col), piece, captured=target)
+                        )
+                elif self.en_passant_target == (new_row, new_col):
+                    ep_pawn = self.board[row, new_col]
+                    moves.append(
+                        Move((row, col), (new_row, new_col), piece,
+                             captured=ep_pawn, is_en_passant=True)
+                    )
+        return moves
+
+    def _get_king_moves(self, row: int, col: int) -> List[Move]:
+        moves = super()._get_king_moves(row, col)
+
+        player = self.current_player
+        rights = self.castling_rights[player]
+        bs = self.board_size
+        rook = Piece.WHITE_ROOK if player == 1 else Piece.BLACK_ROOK
+
+        if rights["kingside"]:
+            rook_col = bs - 1
+            if (self.board[row, rook_col] == rook and
+                    all(self.board[row, c] == Piece.EMPTY for c in range(col + 1, rook_col))):
+                moves.append(
+                    Move((row, col), (row, col + 2), self.board[row, col], is_castling=True)
+                )
+
+        if rights["queenside"]:
+            rook_col = 0
+            if (self.board[row, rook_col] == rook and
+                    all(self.board[row, c] == Piece.EMPTY for c in range(rook_col + 1, col))):
+                moves.append(
+                    Move((row, col), (row, col - 2), self.board[row, col], is_castling=True)
+                )
+
+        return moves
+
+    def get_piece_moves(self, row: int, col: int, check_legal: bool = True) -> List[Move]:
+        moves = super().get_piece_moves(row, col, check_legal)
+        if not check_legal:
+            return moves
+        result = []
+        for move in moves:
+            if move.is_castling:
+                if self._is_in_check(self.current_player):
+                    continue
+                through_col = (move.start[1] + move.end[1]) // 2
+                if self._is_square_attacked(move.start[0], through_col, 3 - self.current_player):
+                    continue
+            result.append(move)
+        return result

@@ -16,8 +16,14 @@ def _ts() -> str:
     return time.strftime("%H:%M:%S")
 
 
-from .chess import Minichess, Move
+from .chess import Minichess, FullChess, Move
 from .networks import FogChessNet
+
+
+def _make_game(board_size: int, max_moves: int, points_tiebreak: bool) -> Minichess:
+    if board_size == 8:
+        return FullChess(max_moves=max_moves, points_tiebreak=points_tiebreak)
+    return Minichess(board_size=board_size, max_moves=max_moves, points_tiebreak=points_tiebreak)
 
 
 def rollout_to_terminal_batch(
@@ -142,10 +148,15 @@ Step = Tuple[
 ]
 
 
-def pretrain_self_play_game() -> Tuple[List[Step], Minichess]:
+def pretrain_self_play_game(
+    board_size: int = 5,
+    max_moves: int = 100,
+    points_tiebreak: bool = False,
+) -> Tuple[List[Step], Minichess]:
     """Play one game with uniform random moves; only value and mask heads are trained."""
-    game = Minichess()
+    game = _make_game(board_size, max_moves, points_tiebreak)
     trajectory: List[Step] = []
+    bs = game.board_size
 
     while not game.game_over:
         player = game.current_player
@@ -155,7 +166,7 @@ def pretrain_self_play_game() -> Tuple[List[Step], Minichess]:
             break
 
         true_mask_pieces: Dict[int, int] = {
-            sq: game.board[sq // 5, sq % 5].value for _, sq, p in fog_log if p == 0
+            sq: game.board[sq // bs, sq % bs].value for _, sq, p in fog_log if p == 0
         }
 
         action_idx = random.randrange(len(moves))
@@ -174,10 +185,14 @@ def self_play_game(
     k_samples: int,
     mc_prob: float,
     mc_rollout_depth: Optional[int] = None,
+    board_size: int = 5,
+    max_moves: int = 100,
+    points_tiebreak: bool = False,
 ) -> Tuple[List[Step], Minichess]:
     """Play one game with the EMA target network for both action selection and rollouts."""
-    game = Minichess()
+    game = _make_game(board_size, max_moves, points_tiebreak)
     trajectory: List[Step] = []
+    bs = game.board_size
 
     while not game.game_over:
         player = game.current_player
@@ -187,7 +202,7 @@ def self_play_game(
             break
 
         true_mask_pieces: Dict[int, int] = {
-            sq: game.board[sq // 5, sq % 5].value for _, sq, p in fog_log if p == 0
+            sq: game.board[sq // bs, sq % bs].value for _, sq, p in fog_log if p == 0
         }
 
         use_mc = random.random() < mc_prob
@@ -371,12 +386,18 @@ def greedy_agent_move(game: Minichess) -> Optional[Move]:
     return random.choice(moves)
 
 
-def evaluate_vs_greedy(net: FogChessNet, num_games: int) -> Dict[str, float]:
+def evaluate_vs_greedy(
+    net: FogChessNet,
+    num_games: int,
+    board_size: int = 5,
+    max_moves: int = 100,
+    points_tiebreak: bool = False,
+) -> Dict[str, float]:
     """Play num_games against the greedy agent (alternating sides). Returns win/draw/loss rates."""
     wins = draws = losses = 0
 
     for game_idx in range(num_games):
-        game = Minichess()
+        game = _make_game(board_size, max_moves, points_tiebreak)
         rl_player = 1 if game_idx % 2 == 0 else 2
 
         while not game.game_over:
@@ -414,11 +435,18 @@ def evaluate_vs_greedy(net: FogChessNet, num_games: int) -> Dict[str, float]:
 
 def train(cfg: dict):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    net = FogChessNet(**cfg["model"]).to(device)
+
+    tcfg = cfg["train"]
+    board_size: int = tcfg.get("board_size", 5)
+    max_moves: int = tcfg.get("max_moves", 300 if board_size == 8 else 100)
+    points_tiebreak: bool = tcfg.get("points_tiebreak", False)
+    num_squares: int = board_size ** 2
+    max_turns: int = max_moves + 1
+
+    net = FogChessNet(**cfg["model"], num_squares=num_squares, max_turns=max_turns).to(device)
     target_net = copy.deepcopy(net)
     target_net.eval()
 
-    tcfg = cfg["train"]
     optimizer = optim.Adam(net.parameters(), lr=tcfg["lr"])
 
     warmup_steps: int = tcfg.get("warmup_steps", 200)
@@ -471,7 +499,7 @@ def train(cfg: dict):
         t0 = time.time()
         game_lengths = []
         for _ in range(games_per_update):
-            trajectory, game = pretrain_self_play_game()
+            trajectory, game = pretrain_self_play_game(board_size, max_moves, points_tiebreak)
             if trajectory:
                 replay_buffer.append((trajectory, game))
                 game_lengths.append(len(trajectory))
@@ -523,7 +551,8 @@ def train(cfg: dict):
         game_lengths = []
         for _ in range(games_per_update):
             trajectory, game = self_play_game(
-                target_net, k_samples, mc_prob, mc_rollout_depth
+                target_net, k_samples, mc_prob, mc_rollout_depth,
+                board_size, max_moves, points_tiebreak,
             )
             if trajectory:
                 replay_buffer.append((trajectory, game))
@@ -575,7 +604,7 @@ def train(cfg: dict):
 
         if (iteration + 1) % eval_interval == 0:
             net.eval()
-            stats = evaluate_vs_greedy(net, eval_games)
+            stats = evaluate_vs_greedy(net, eval_games, board_size, max_moves, points_tiebreak)
             net.train()
 
             writer.add_scalar("eval/win_rate_vs_greedy", stats["win_rate"], iteration)

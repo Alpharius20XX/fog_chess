@@ -8,8 +8,6 @@ from typing import List, Tuple
 
 # Vocabulary constants matching chess.Piece enum (0=UNKNOWN … 13=BLACK_KING)
 NUM_PIECES = 14
-NUM_SQUARES = 25  # 5×5 board
-MAX_TURNS = 101  # turns 0–100
 
 # Token-type IDs
 _TYPE_CLS = 0
@@ -36,6 +34,8 @@ class StateEncoder(nn.Module):
         n_layers: int = 4,
         dim_feedforward: int = 256,
         dropout: float = 0.1,
+        num_squares: int = 25,
+        max_turns: int = 101,
     ):
         super().__init__()
         self.d_model = d_model
@@ -43,11 +43,11 @@ class StateEncoder(nn.Module):
         self.cls_token = nn.Parameter(torch.randn(d_model))
         self.mask_token = nn.Parameter(torch.randn(d_model))
 
-        self.turn_emb = nn.Embedding(MAX_TURNS, d_model)
-        self.square_emb = nn.Embedding(NUM_SQUARES, d_model)
+        self.turn_emb = nn.Embedding(max_turns, d_model)
+        self.square_emb = nn.Embedding(num_squares, d_model)
         self.piece_emb = nn.Embedding(NUM_PIECES, d_model)
-        self.start_sq_emb = nn.Embedding(NUM_SQUARES, d_model)
-        self.end_sq_emb = nn.Embedding(NUM_SQUARES, d_model)
+        self.start_sq_emb = nn.Embedding(num_squares, d_model)
+        self.end_sq_emb = nn.Embedding(num_squares, d_model)
         self.token_type_emb = nn.Embedding(4, d_model)
         self.player_emb = nn.Embedding(2, d_model)  # index 0 = player 1, index 1 = player 2
 
@@ -203,9 +203,12 @@ class FogChessNet(nn.Module):
         n_layers: int = 4,
         dim_feedforward: int = 256,
         dropout: float = 0.1,
+        num_squares: int = 25,
+        max_turns: int = 101,
     ):
         super().__init__()
-        self.encoder = StateEncoder(d_model, n_head, n_layers, dim_feedforward, dropout)
+        self.encoder = StateEncoder(d_model, n_head, n_layers, dim_feedforward, dropout,
+                                    num_squares=num_squares, max_turns=max_turns)
         self.mask_predictor = MaskPredictor(d_model)
         self.value_head = ValueHead(d_model)
         self.policy_head = PolicyHead(d_model)

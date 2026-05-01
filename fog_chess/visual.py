@@ -19,9 +19,10 @@ _PIECE_SYMBOLS = {
 
 
 def visualize_board(board, last_move=None, pause=0.8):
-    fig, ax = plt.subplots(figsize=(5, 5))
-    for row in range(5):
-        for col in range(5):
+    bs = len(board)
+    fig, ax = plt.subplots(figsize=(bs, bs))
+    for row in range(bs):
+        for col in range(bs):
             piece = board[row][col] if isinstance(board[0], tuple) else board[row, col]
             if last_move and (
                 (row, col) == last_move.start or (row, col) == last_move.end
@@ -29,11 +30,11 @@ def visualize_board(board, last_move=None, pause=0.8):
                 colour = "#BACA44"
             else:
                 colour = "#F0D9B5" if (row + col) % 2 == 0 else "#B58863"
-            ax.add_patch(Rectangle((col, 4 - row), 1, 1, facecolor=colour))
+            ax.add_patch(Rectangle((col, bs - 1 - row), 1, 1, facecolor=colour))
             if piece not in (Piece.EMPTY, Piece.UNKNOWN):
                 ax.text(
                     col + 0.5,
-                    4 - row + 0.5,
+                    bs - 1 - row + 0.5,
                     _PIECE_SYMBOLS.get(piece, piece.to_string()),  # type: ignore
                     ha="center",
                     va="center",
@@ -43,7 +44,7 @@ def visualize_board(board, last_move=None, pause=0.8):
             elif piece == Piece.UNKNOWN:
                 ax.text(
                     col + 0.5,
-                    4 - row + 0.5,
+                    bs - 1 - row + 0.5,
                     _PIECE_SYMBOLS.get(piece, piece.to_string()),  # type: ignore
                     ha="center",
                     va="center",
@@ -51,12 +52,13 @@ def visualize_board(board, last_move=None, pause=0.8):
                     color="#A3A3A3",
                 )
 
-    for i in range(5):
-        ax.text(-0.25, 4 - i + 0.5, str(5 - i), ha="center", va="center")
-        ax.text(i + 0.5, -0.25, "abcde"[i], ha="center", va="center")
+    cols_label = "abcdefgh"[:bs]
+    for i in range(bs):
+        ax.text(-0.25, bs - 1 - i + 0.5, str(bs - i), ha="center", va="center")
+        ax.text(i + 0.5, -0.25, cols_label[i], ha="center", va="center")
 
-    ax.set_xlim(-0.5, 5)
-    ax.set_ylim(-0.5, 5)
+    ax.set_xlim(-0.5, bs)
+    ax.set_ylim(-0.5, bs)
     ax.set_aspect("equal")
     ax.axis("off")
     plt.show(block=False)
