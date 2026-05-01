@@ -1,6 +1,6 @@
 # Fog of War Mini-Chess 
 
-Fog of war is a variant of chess where each player can only see their own pieces, and squares where their own pieces can move to (including by capturing). This turns chess from a perfect to an imperfect information game. Mini-chess is a further variant of chess where the board is smaller: 5x5 instead of 8x8, and fewer pieces are used. We will use this variant because we hope it will make the game easier to learn for a reinforcement learning agent. We call the combination of both variants FOWMC.
+Fog of war is a variant of chess where each player can only see their own pieces, and squares where their own pieces can move to (including by capturing). This turns chess from a perfect to an imperfect information game. Mini-chess is a further variant of chess where the board is smaller: 5x5 instead of 8x8, and fewer pieces are used. We will use this variant because we hope it will make the game easier to learn for a reinforcement learning agent. We call the combination of both variants Fog of War Mini-Chess .
 
 ```
 k q b n r
