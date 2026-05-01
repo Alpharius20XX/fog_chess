@@ -239,6 +239,7 @@ def compute_losses(
     policy_losses: List[torch.Tensor] = []
     value_losses: List[torch.Tensor] = []
     mask_losses: List[torch.Tensor] = []
+    device = next(net.parameters()).device
 
     for (
         fog_log,
@@ -250,7 +251,7 @@ def compute_losses(
     ) in trajectory:
         out = net.forward(fog_log, action_indices, player)
 
-        z = torch.tensor(player_outcome[player])
+        z = torch.tensor(player_outcome[player], device=device)
         loss_value = F.mse_loss(torch.sigmoid(out.value), (z + 1.0) / 2.0)
         value_losses.append(loss_value)
 
@@ -264,14 +265,15 @@ def compute_losses(
             true_pieces = torch.tensor(
                 [true_mask_pieces[sq] for _, sq, p in fog_log if p == 0],
                 dtype=torch.long,
+                device=device,
             )
             mask_losses.append(F.cross_entropy(mask_logits, true_pieces))
 
     mean_policy = (
-        torch.stack(policy_losses).mean() if policy_losses else torch.tensor(0.0)
+        torch.stack(policy_losses).mean() if policy_losses else torch.tensor(0.0, device=device)
     )
     mean_value = torch.stack(value_losses).mean()
-    mean_mask = torch.stack(mask_losses).mean() if mask_losses else torch.tensor(0.0)
+    mean_mask = torch.stack(mask_losses).mean() if mask_losses else torch.tensor(0.0, device=device)
     total = c_policy * mean_policy + c_value * mean_value + c_mask * mean_mask
 
     return total, mean_policy, mean_value, mean_mask
