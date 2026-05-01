@@ -256,7 +256,7 @@ def compute_losses(
         value_losses.append(loss_value)
 
         if has_mc:
-            loss_policy = -(improved_probs.detach() * out.action_log_probs).mean()
+            loss_policy = -(improved_probs.detach().to(device) * out.action_log_probs).mean()
             policy_losses.append(loss_policy)
 
         mask_positions = [i + 1 for i, (_, _, p) in enumerate(fog_log) if p == 0]
