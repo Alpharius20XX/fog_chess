@@ -24,3 +24,6 @@ train:
   eval_interval: 50
   eval_games: 20
   log_dir: runs/fog_chess
+  checkpoint_dir: checkpoints/fog_chess
+  checkpoint_interval: 50
+  resume: null  # path to a .pt checkpoint file to resume from

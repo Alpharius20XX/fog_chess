@@ -1,4 +1,5 @@
 import copy
+import os
 import random
 import time
 from collections import deque
@@ -276,6 +277,45 @@ def compute_losses(
     return total, mean_policy, mean_value, mean_mask
 
 
+def save_checkpoint(
+    path: str,
+    net: FogChessNet,
+    target_net: FogChessNet,
+    optimizer,
+    scheduler,
+    phase: str,
+    iteration: int,
+) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    torch.save(
+        {
+            "phase": phase,
+            "iteration": iteration,
+            "net": net.state_dict(),
+            "target_net": target_net.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+        },
+        path,
+    )
+
+
+def load_checkpoint(
+    path: str,
+    net: FogChessNet,
+    target_net: FogChessNet,
+    optimizer,
+    scheduler,
+) -> Tuple[str, int]:
+    ckpt = torch.load(path, weights_only=True)
+    net.load_state_dict(ckpt["net"])
+    target_net.load_state_dict(ckpt["target_net"])
+    optimizer.load_state_dict(ckpt["optimizer"])
+    scheduler.load_state_dict(ckpt["scheduler"])
+    print(f"[{_ts()}] Resumed from {path} (phase={ckpt['phase']}, iter={ckpt['iteration']})")
+    return ckpt["phase"], ckpt["iteration"]
+
+
 def update_ema(net: FogChessNet, target_net: FogChessNet, decay: float) -> None:
     with torch.no_grad():
         for p, p_t in zip(net.parameters(), target_net.parameters()):
@@ -401,12 +441,31 @@ def train(cfg: dict):
     eval_interval: int = tcfg.get("eval_interval", 50)
     eval_games: int = tcfg.get("eval_games", 20)
     log_dir: str = tcfg.get("log_dir", "runs/fog_chess")
+    checkpoint_dir: str = tcfg.get("checkpoint_dir", "checkpoints/fog_chess")
+    checkpoint_interval: int = tcfg.get("checkpoint_interval", 50)
+    resume: Optional[str] = tcfg.get("resume", None)
 
     writer = SummaryWriter(log_dir=log_dir)
     replay_buffer: Deque[Tuple[List[Step], Minichess]] = deque(maxlen=buffer_size)
 
+    resume_phase = "pretrain"
+    resume_iter = -1
+    if resume:
+        resume_phase, resume_iter = load_checkpoint(
+            resume, net, target_net, optimizer, scheduler
+        )
+
+    def _maybe_checkpoint(phase: str, iteration: int) -> None:
+        if (iteration + 1) % checkpoint_interval == 0:
+            ckpt_path = os.path.join(checkpoint_dir, f"{phase}_{iteration:06d}.pt")
+            save_checkpoint(ckpt_path, net, target_net, optimizer, scheduler, phase, iteration)
+            latest_path = os.path.join(checkpoint_dir, "latest.pt")
+            save_checkpoint(latest_path, net, target_net, optimizer, scheduler, phase, iteration)
+            print(f"[{_ts()}] Checkpoint saved: {ckpt_path}")
+
     # --- Pretraining phase ---
-    for iteration in range(pretrain_iterations):
+    pretrain_start = resume_iter + 1 if resume_phase == "pretrain" else pretrain_iterations
+    for iteration in range(pretrain_start, pretrain_iterations):
         t0 = time.time()
         game_lengths = []
         for _ in range(games_per_update):
@@ -453,9 +512,11 @@ def train(cfg: dict):
             f"v {loss_value.item():.4f} | m {loss_mask.item():.4f} | "
             f"game_len {avg_game_len:.1f} | buffer {len(replay_buffer):4d}"
         )
+        _maybe_checkpoint("pretrain", iteration)
 
     # --- Self-play training phase ---
-    for iteration in range(num_iterations):
+    train_start = resume_iter + 1 if resume_phase == "train" else 0
+    for iteration in range(train_start, num_iterations):
         t0 = time.time()
         game_lengths = []
         for _ in range(games_per_update):
@@ -524,6 +585,7 @@ def train(cfg: dict):
                 f"draw={stats['draw_rate']:.2%} "
                 f"loss={stats['loss_rate']:.2%}"
             )
+        _maybe_checkpoint("train", iteration)
 
     writer.close()
 
