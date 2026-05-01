@@ -51,6 +51,10 @@ class Minichess:
 
     def __init__(self):
         self.board_size = 5
+        self.masked=True
+
+        self.show_turn=5
+
         self.reset()
 
     def reset(self):
@@ -66,6 +70,12 @@ class Minichess:
         self.winner = None
         self.move_history: List[Move] = []
         self.move_count = 0
+
+        if(self.masked):
+            self.w_hist=[]
+            self.b_hist=[]
+        
+
         return self.get_state()
 
     def get_state(self):
@@ -215,13 +225,34 @@ class Minichess:
                         moves.append(Move((row, col), (nr, nc), piece, captured=None if target == "." else target))
         return moves
 
-    def get_all_valid_moves(self) -> List[Move]:
+    def get_all_valid_moves(self,maskedhist=None) -> List[Move]:
+
+        
         moves = []
-        for row in range(5):
-            for col in range(5):
-                piece = self.board[row, col]
-                if piece != "." and self.is_friendly(piece, self.current_player):
-                    moves.extend(self.get_piece_moves(row, col))
+        if(maskedhist is None):
+            for row in range(5):
+                for col in range(5):
+                    piece = self.board[row, col]
+                    if piece != "." and self.is_friendly(piece, self.current_player):
+
+                        moves.extend(self.get_piece_moves(row, col))
+        else:#for if we want to check consistency with history
+            for row in range(5):
+                for col in range(5):
+                    piece = self.board[row, col]
+                    if piece != "." and self.is_friendly(piece, self.current_player):
+
+                        cand_moves=[]
+
+                        
+
+                        for move in (self.get_piece_moves(row, col)):
+
+                            self._make_move_internal(move= move)
+                            if np.array_equal(self.mask(), maskedhist):
+                                cand_moves+=[move]
+
+                        moves.extend(cand_moves)
         return moves
 
     def _find_king(self, player: int):
@@ -271,7 +302,21 @@ class Minichess:
         self._make_move_internal(move)
         self.move_history.append(move)
         self.move_count += 1
+            
+
+
+
+
+
         self.current_player = 3 - self.current_player
+
+        if(self.masked):
+            if(len(self.b_hist)==self.show_turn+1): #show every five turns
+                self.w_hist=[self.board]
+                self.b_hist=[self.board]
+            else:
+                self.mask()
+            
 
         opponent_moves = self.get_all_valid_moves()
         is_check = self._is_in_check(self.current_player)
@@ -337,6 +382,35 @@ class Minichess:
         print("  a b c d e\n")
 
 
+    def mask(self):
+            
+        masked = np.full_like(self.board, '_', dtype=str)
+
+        for r in range(5):
+            for c in range(5):
+                piece = self.board[r, c]
+                if self.is_friendly(piece, self.current_player):
+
+                    for move in self.get_piece_moves(r, c, check_legal=False):
+                            masked[move.end]=self.board[move.end]
+                    
+        if(self.current_player==1):
+            self.w_hist+=[masked]
+
+        else:
+            self.b_hist+=[masked]
+
+        return masked
+    
+
+    
+
+
+
+
+
+
+
 # ============================================================
 # MCTS
 # ============================================================
@@ -351,6 +425,10 @@ class MCTSNode:
         self.visit_count = 0
         self.value_sum = 0.0
         self.is_expanded = False
+        if(self.parent==None):
+            depth=0
+        else:
+            depth=self.parent.depth+1
 
     def value(self):
         return self.value_sum / self.visit_count if self.visit_count > 0 else 0.0
@@ -363,8 +441,8 @@ class MCTSNode:
     def select_child(self, c_puct=1.5):
         return max(self.children.values(), key=lambda child: child.ucb_score(self.visit_count, c_puct))
 
-    def expand(self, game, policy_priors):
-        valid_moves = game.get_all_valid_moves()
+    def expand(self, game, policy_priors,maskedhist=None,move_hist=None):
+        valid_moves = game.get_all_valid_moves(maskedhist=maskedhist)
         if not valid_moves:
             return
         total_prior = sum(policy_priors.values()) or len(valid_moves)
@@ -373,6 +451,11 @@ class MCTSNode:
             child_game.make_move(move)
             prior = policy_priors.get(move, 1.0) / total_prior
             self.children[move] = MCTSNode(child_game.get_state(), parent=self, move=move, prior=prior)
+            if not (maskedhist is None):
+                child_game = game.copy()
+                child_game.make_move(move_hist[-(len(maskedhist)*2-1)])
+                prior = policy_priors.get(move, 1.0) / total_prior
+                self.children[move] = MCTSNode(child_game.get_state(), parent=self, move=move, prior=prior)
         self.is_expanded = True
 
     def backup(self, value):
@@ -401,6 +484,9 @@ class Agent:
         self.wins = 0
         self.losses = 0
         self.draws = 0
+        self.hidden_depth=0
+        self.youngest_node=None
+        self.oldest_node=None
 
     def get_policy_priors(self, game):
         state = game.get_state()
@@ -416,8 +502,53 @@ class Agent:
                     prior += 3.0
                 priors[move] = prior
         return priors
+    
+    def mcts_histsearch(self, game,maskedhist):
+
+        move_hist=game.move_history
+
+
+        if(len(maskedhist)<self.hidden_depth):
+            self.hidden_depth=0
+            self.oldest_node=MCTSNode(game.get_state())
+
+
+        root = self.oldest_node
+
+
+        maxdepth=self.hidden_depth
+
+        while maxdepth<len(maskedhist):
+            node = root
+            search_game = game.copy()
+
+            while node.is_expanded and node.children:
+                node = node.select_child(self.c_puct)
+
+                if(node.depth>maxdepth):
+                    maxdepth=node.depth
+
+                search_game.make_move(node.move)
+
+                
+
+            if not search_game.game_over:
+                node.expand(search_game, self.get_policy_priors(search_game),maskedhist[node.depth+1:],move_hist=move_hist)
+
+            
+
+            value = self._evaluate_leaf(search_game)
+            node.backup(value)
+            self.youngest_node=node #could make more efficient
+
+        
+
+        self.hidden_depth=maxdepth
+
+        return root
 
     def mcts_search(self, game, num_simulations):
+
         root = MCTSNode(game.get_state())
 
         for _ in range(num_simulations):
@@ -453,8 +584,10 @@ class Agent:
         moves = game.get_all_valid_moves()
         if not moves:
             return game.evaluate_position(self.player_id)
+        
+        #removing the random move truncation
 
-        moves = moves[:8]
+        #moves = moves[:8]
         if maximizing:
             best = -float("inf")
             for move in moves:
@@ -478,15 +611,21 @@ class Agent:
                     break
             return best
 
-    def choose_action(self, game, training=True):
+    def choose_action(self, game, training=True):#modify to do fog
+
+
         moves = game.get_all_valid_moves()
         if not moves:
             return None
 
         if training and random.random() < self.epsilon:
             return random.choice(moves)
+        
+        #fog stuff
 
-        root = self.mcts_search(game, self.mcts_simulations)
+        fake_game=self.hidden_sample(game)
+
+        root = self.mcts_search(fake_game, self.mcts_simulations)
         if not root.children:
             return random.choice(moves)
 
@@ -498,6 +637,59 @@ class Agent:
             self.policy_table[state][move] = child.visit_count / total_visits
 
         return best_move
+    
+    def hidden_sample(self,real_game):
+
+        game=real_game.copy()
+
+
+        if(game.current_player==1):
+            hist=game.w_hist
+        else:
+            hist=game.b_hist
+        
+        game.board=hist[0]
+
+        if(len(hist)==1):
+            return(game)
+
+        game.current_player=3-game.current_player
+
+        root = self.mcts_histsearch(game,hist)
+
+        Node=self.youngest_node
+
+        moves=[]
+
+        while(Node.parent!=None):
+            moves+=[Node.move]
+            Node=Node.parent
+
+        
+        moves=moves[::-1]
+
+        for move in moves:
+            game.make_move(move)
+
+        
+
+
+        #best_move = max(root.children.items(), key=lambda x: x[1].visit_count)[0]##dubious
+
+        
+
+        game.current_player=3-game.current_player
+
+
+
+        return game
+
+
+
+
+
+
+
 
     def update_from_game(self, game_data, result):
         for state, move, player in game_data:
@@ -512,6 +704,9 @@ class Agent:
 
     def reset_stats(self):
         self.wins = self.losses = self.draws = 0
+
+
+        
 
 
 # ============================================================
