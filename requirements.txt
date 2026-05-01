@@ -2,6 +2,3 @@ streamlit
 numpy
 matplotlib
 pandas
-torch
-tensorboard
-pyyaml

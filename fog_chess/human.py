@@ -2,33 +2,52 @@ from .chess import Minichess
 from .visual import visualize_board
 
 
-def parse_move_input(text, valid_moves, board_size):
+def parse_move_input(text, valid_moves):
     """
-    User input format: two space-separated square indices, e.g. "20 15"
-    Index encoding: row * board_size + col (same as get_legal_move_indices).
+    User input format:
+    e.g. a2a3, b1c3, a2a1=Q
     """
-    try:
-        parts = text.strip().split()
-        if len(parts) == 2:
-            from_sq, to_sq = int(parts[0]), int(parts[1])
+    text = text.strip().lower().replace(" ", "")
+    cols = "abcde"
+
+    for move in valid_moves:
+        if move.to_notation().lower().replace("+", "").replace("#", "") == text:
+            return move
+
+    # allow simple input like a2a3 without promotion/check signs
+    if len(text) >= 4:
+        try:
+            sc = cols.index(text[0])
+            sr = 5 - int(text[1])
+            ec = cols.index(text[2])
+            er = 5 - int(text[3])
+
+            promotion = None
+            if "=" in text:
+                promotion = text.split("=")[1].upper()
+
             for move in valid_moves:
-                if move.start[0] * board_size + move.start[1] == from_sq and move.end[0] * board_size + move.end[1] == to_sq:
-                    return move
-    except Exception:
-        pass
+                if move.start == (sr, sc) and move.end == (er, ec):
+                    if promotion is None or (
+                        move.promotion is not None
+                        and move.promotion.to_string().upper() == promotion
+                    ):
+                        return move
+        except Exception:
+            return None
+
     return None
 
 
 def play_two_players(visual=False):
     game = Minichess()
-    bs = game.board_size
 
     print("Game started.")
-    print(f"Input move as two indices, e.g. '20 15' (from_sq to_sq, index = row*{bs}+col)")
+    print("Input move like: a2a3 or b1c3")
 
     last_moves = {}
 
-    while not game.game_over and game.move_count < game.max_moves:
+    while not game.game_over and game.move_count < 100:
         player = game.current_player
         name = "White" if player == 1 else "Black"
 
@@ -39,13 +58,12 @@ def play_two_players(visual=False):
             visualize_board(state, last_moves.get(player))
 
         valid_moves = game.get_all_valid_moves()
-        legal_indices = game.get_legal_move_indices(player)
 
         print("Your valid moves:")
-        print(", ".join(f"({f} {t})" for f, t in legal_indices))
+        print(", ".join(m.to_notation() for m in valid_moves))
 
         user_input = input("Your move: ")
-        move = parse_move_input(user_input, valid_moves, bs)
+        move = parse_move_input(user_input, valid_moves)
 
         if move is None:
             print("Invalid move. Try again.")
@@ -53,7 +71,7 @@ def play_two_players(visual=False):
 
         game.make_move(move)
         last_moves[player] = move
-        print(f"You played: {move.to_notation(bs)}")
+        print(f"You played: {move.to_notation()}")
 
     print(f"Winner: {game.winner}")
 

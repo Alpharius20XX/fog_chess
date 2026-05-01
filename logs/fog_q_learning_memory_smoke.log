@@ -1,0 +1,25 @@
+2026-04-30 16:44:30,130 INFO observation_check | player=White | unknown_squares=10 | cells=25
+2026-04-30 16:44:30,130 INFO training_start | episodes=20 | seed=7 | learning_rate=0.200->0.050 | discount=0.950 | exploration=0.400->0.050 | evaluation_games=5
+2026-04-30 16:44:31,135 INFO 
+episode=10 | exploration=0.234 | learning_rate=0.129 | average_length=67.4
+self_play white_win / black_win / draw = 10.0 / 30.0 / 60.0
+white_eval_vs_random decisive_win / win - loss - draw = 50.0 | 20.0 - 20.0 - 60.0
+black_eval_vs_random decisive_win / win - loss - draw = 100.0 | 40.0 - 0.0 - 60.0
+best_score=75.0 at_episode=10 | q_states white/black=305/321
+======
+2026-04-30 16:44:32,159 INFO 
+episode=20 | exploration=0.050 | learning_rate=0.050 | average_length=76.8
+self_play white_win / black_win / draw = 10.0 / 20.0 / 70.0
+white_eval_vs_random decisive_win / win - loss - draw = 50.0 | 20.0 - 20.0 - 60.0
+black_eval_vs_random decisive_win / win - loss - draw = 100.0 | 20.0 - 0.0 - 80.0
+best_score=75.0 at_episode=10 | q_states white/black=651/659
+======
+2026-04-30 16:44:32,634 INFO 
+training_done
+self_play white_win / black_win / draw = 10.0 / 20.0 / 70.0
+white_eval_vs_random decisive_win / win - loss - draw = 50.0 | 20.0 - 20.0 - 60.0
+black_eval_vs_random decisive_win / win - loss - draw = 100.0 | 20.0 - 0.0 - 80.0
+final_score=75.0 | best_score=75.0 at_episode=10
+model_file=models/fog_q_learning_memory_smoke.json
+log_file=logs/fog_q_learning_memory_smoke.log
+======
