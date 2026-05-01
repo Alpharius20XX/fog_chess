@@ -16,7 +16,7 @@ def _ts() -> str:
     return time.strftime("%H:%M:%S")
 
 
-from .chess import Minichess, FullChess, Move
+from .chess import Minichess, FullChess, Move, Piece
 from .networks import FogChessNet
 
 
@@ -110,17 +110,31 @@ def mc_action_search(
     player: int,
     max_depth: Optional[int] = None,
 ) -> torch.Tensor:
-    """Run k_samples MC rollouts with batched inference."""
+    """Run k_samples MC rollouts with batched inference.
+
+    Actions are assigned round-robin so every legal move is explored equally.
+    Each rollout world is determinized by writing the mask predictor's predictions
+    for hidden squares onto the game copy's board, while the network always
+    operates on the original fog_log (incomplete information).
+    """
     n_actions = len(action_indices)
 
+    # Round-robin: action i % n_actions, so every action gets floor(k/n) or ceil(k/n) rollouts
+    sampled = [i % n_actions for i in range(k_samples)]
+
+    # Build one determinized world per rollout by overwriting hidden squares
     with torch.no_grad():
         det_logs = net.reconstruct_masks_batch(fog_log, action_indices, k_samples, player)
-        outputs = net.forward_batch([(det, action_indices, player) for det in det_logs])
-    sampled = [
-        int(torch.multinomial(out.action_log_probs.exp(), 1).item()) for out in outputs
-    ]
 
-    game_copies = [game.copy() for _ in range(k_samples)]
+    bs = game.board_size
+    game_copies = []
+    for det_log in det_logs:
+        gc = game.copy()
+        for (_, sq, orig_p), (_, _, det_p) in zip(fog_log, det_log):
+            if orig_p == 0:
+                gc.board[sq // bs, sq % bs] = Piece(det_p) if det_p != 0 else Piece.EMPTY
+        game_copies.append(gc)
+
     for gc, action_idx in zip(game_copies, sampled):
         gc.make_move(moves[action_idx])
 
@@ -132,11 +146,8 @@ def mc_action_search(
         action_returns[action_idx] += outcome
         action_counts[action_idx] += 1
 
-    avg_returns = torch.where(
-        action_counts > 0,
-        action_returns / action_counts.clamp(min=1),
-        torch.full((n_actions,), -1.0),
-    )
+    # All actions are covered by round-robin so action_counts > 0 everywhere
+    avg_returns = action_returns / action_counts
     return F.softmax(avg_returns, dim=0)
 
 
@@ -547,6 +558,8 @@ def train(cfg: dict):
         _maybe_checkpoint("pretrain", iteration)
 
     # --- Self-play training phase ---
+    if resume_phase != "train":
+        replay_buffer.clear()
     train_start = resume_iter + 1 if resume_phase == "train" else 0
     for iteration in range(train_start, num_iterations):
         t0 = time.time()
