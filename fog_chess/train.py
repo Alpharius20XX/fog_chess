@@ -31,6 +31,7 @@ def rollout_to_terminal_batch(
     net: FogChessNet,
     for_player: int,
     max_depth: Optional[int] = None,
+    copy_games: bool = True,
 ) -> List[float]:
     """Roll out multiple games in parallel, returning bootstrapped value estimates.
 
@@ -38,7 +39,8 @@ def rollout_to_terminal_batch(
     perspective. Terminal states use the actual game outcome. Returns the per-game
     average across all collected estimates.
     """
-    games = [g.copy() for g in games]
+    if copy_games:
+        games = [g.copy() for g in games]
     n = len(games)
     active = list(range(n))
     depths = [0] * n
@@ -122,7 +124,7 @@ def mc_action_search(
     for gc, action_idx in zip(game_copies, sampled):
         gc.make_move(moves[action_idx])
 
-    outcomes = rollout_to_terminal_batch(game_copies, net, player, max_depth)
+    outcomes = rollout_to_terminal_batch(game_copies, net, player, max_depth, copy_games=False)
 
     action_returns = torch.zeros(n_actions)
     action_counts = torch.zeros(n_actions)
