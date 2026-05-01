@@ -1,1 +1,4 @@
 __pycache__
+runs
+checkpoints
+.DS_Store
