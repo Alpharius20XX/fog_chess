@@ -76,7 +76,7 @@ def rollout_to_terminal_batch(
 
         with torch.no_grad():
             outputs = net.forward_with_reconstruction_batch(
-                [(fl, ai) for _, _, fl, _, ai, _ in need_move]
+                [(fl, ai, current) for _, _, fl, _, ai, current in need_move]
             )
 
         for (idx, g, _, moves, _, current_player), out in zip(need_move, outputs):
@@ -106,8 +106,8 @@ def mc_action_search(
     n_actions = len(action_indices)
 
     with torch.no_grad():
-        det_logs = net.reconstruct_masks_batch(fog_log, action_indices, k_samples)
-        outputs = net.forward_batch([(det, action_indices) for det in det_logs])
+        det_logs = net.reconstruct_masks_batch(fog_log, action_indices, k_samples, player)
+        outputs = net.forward_batch([(det, action_indices, player) for det in det_logs])
     sampled = [
         int(torch.multinomial(out.action_log_probs.exp(), 1).item()) for out in outputs
     ]
@@ -205,7 +205,7 @@ def self_play_game(
             action_idx = int(torch.multinomial(improved_probs, 1).item())
         else:
             with torch.no_grad():
-                out = rollout_net.forward_with_reconstruction(fog_log, action_indices)
+                out = rollout_net.forward_with_reconstruction(fog_log, action_indices, player)
                 action_idx = int(
                     torch.multinomial(out.action_log_probs.exp(), 1).item()
                 )
@@ -248,7 +248,7 @@ def compute_losses(
         true_mask_pieces,
         has_mc,
     ) in trajectory:
-        out = net.forward(fog_log, action_indices)
+        out = net.forward(fog_log, action_indices, player)
 
         z = torch.tensor(player_outcome[player])
         loss_value = F.mse_loss(torch.sigmoid(out.value), (z + 1.0) / 2.0)
@@ -385,7 +385,7 @@ def evaluate_vs_greedy(net: FogChessNet, num_games: int) -> Dict[str, float]:
                 if not moves:
                     break
                 with torch.no_grad():
-                    out = net.forward_with_reconstruction(fog_log, action_indices)
+                    out = net.forward_with_reconstruction(fog_log, action_indices, player)
                     action_idx = int(
                         torch.multinomial(out.action_log_probs.exp(), 1).item()
                     )

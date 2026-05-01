@@ -49,6 +49,7 @@ class StateEncoder(nn.Module):
         self.start_sq_emb = nn.Embedding(NUM_SQUARES, d_model)
         self.end_sq_emb = nn.Embedding(NUM_SQUARES, d_model)
         self.token_type_emb = nn.Embedding(4, d_model)
+        self.player_emb = nn.Embedding(2, d_model)  # index 0 = player 1, index 1 = player 2
 
         layer = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -66,6 +67,7 @@ class StateEncoder(nn.Module):
         self,
         fog_log: List[Tuple[int, int, int]],
         action_indices: List[Tuple[int, int]],
+        player: int = 1,
     ) -> Tuple[torch.Tensor, List[int]]:
         """Build the full token sequence with batched embedding lookups.
 
@@ -81,7 +83,8 @@ class StateEncoder(nn.Module):
         tokens = torch.empty(seq_len, self.d_model, device=device)
 
         # CLS token
-        tokens[0] = self.cls_token + self.token_type_emb.weight[_TYPE_CLS]
+        player_idx = torch.tensor(player - 1, device=device, dtype=torch.long)
+        tokens[0] = self.cls_token + self.token_type_emb.weight[_TYPE_CLS] + self.player_emb(player_idx)
 
         mask_positions: List[int] = []
 
@@ -211,6 +214,7 @@ class FogChessNet(nn.Module):
         self,
         fog_log: List[Tuple[int, int, int]],
         action_indices: List[Tuple[int, int]],
+        player: int = 1,
     ) -> ForwardOutput:
         """Forward pass over the fog log (UNKNOWN entries become MASK tokens).
 
@@ -219,7 +223,7 @@ class FogChessNet(nn.Module):
           action_indices: [(start_sq, end_sq), ...] from Minichess.get_legal_move_indices()
         """
         n_fog = len(fog_log)
-        tokens, _ = self.encoder.embed(fog_log, action_indices)
+        tokens, _ = self.encoder.embed(fog_log, action_indices, player)
         hidden = self.encoder(tokens.unsqueeze(0))  # [1, seq_len, d_model]
 
         cls_h = hidden[:, 0, :]  # [1, d_model]
@@ -239,6 +243,7 @@ class FogChessNet(nn.Module):
         self,
         fog_log: List[Tuple[int, int, int]],
         action_indices: List[Tuple[int, int]],
+        player: int = 1,
         temperature: float = 1.0,
     ) -> List[Tuple[int, int, int]]:
         """Single-pass mask reconstruction: one forward pass samples all unknowns at once.
@@ -251,7 +256,7 @@ class FogChessNet(nn.Module):
         if not pending:
             return fog_log
 
-        tokens, _ = self.encoder.embed(fog_log, action_indices)
+        tokens, _ = self.encoder.embed(fog_log, action_indices, player)
         hidden = self.encoder(tokens.unsqueeze(0))[0]  # [seq_len, d_model]
 
         for fog_idx in pending:
@@ -267,11 +272,12 @@ class FogChessNet(nn.Module):
         self,
         fog_log: List[Tuple[int, int, int]],
         action_indices: List[Tuple[int, int]],
+        player: int = 1,
         temperature: float = 1.0,
     ) -> ForwardOutput:
         """Reconstruct all MASK tokens in one pass, then run the full forward pass."""
-        determinized = self.reconstruct_masks(fog_log, action_indices, temperature)
-        return self.forward(determinized, action_indices)
+        determinized = self.reconstruct_masks(fog_log, action_indices, player, temperature)
+        return self.forward(determinized, action_indices, player)
 
     @torch.no_grad()
     def reconstruct_masks_batch(
@@ -279,6 +285,7 @@ class FogChessNet(nn.Module):
         fog_log: List[Tuple[int, int, int]],
         action_indices: List[Tuple[int, int]],
         n_samples: int,
+        player: int = 1,
         temperature: float = 1.0,
     ) -> List[List[Tuple[int, int, int]]]:
         """Sample n_samples independent reconstructions using a single encoder pass."""
@@ -286,7 +293,7 @@ class FogChessNet(nn.Module):
         if not pending:
             return [list(fog_log) for _ in range(n_samples)]
 
-        tokens, _ = self.encoder.embed(fog_log, action_indices)
+        tokens, _ = self.encoder.embed(fog_log, action_indices, player)
         hidden = self.encoder(tokens.unsqueeze(0))[0]  # [seq_len, d_model]
 
         piece_probs = [
@@ -306,19 +313,19 @@ class FogChessNet(nn.Module):
 
     def forward_batch(
         self,
-        batch: List[Tuple[List[Tuple[int, int, int]], List[Tuple[int, int]]]],
+        batch: List[Tuple[List[Tuple[int, int, int]], List[Tuple[int, int]], int]],
     ) -> List[ForwardOutput]:
         """Batched forward pass over variable-length sequences using key-padding mask."""
         if not batch:
             return []
         if len(batch) == 1:
-            fog_log, action_indices = batch[0]
-            return [self.forward(fog_log, action_indices)]
+            fog_log, action_indices, player = batch[0]
+            return [self.forward(fog_log, action_indices, player)]
 
         token_seqs: List[torch.Tensor] = []
         n_fogs: List[int] = []
-        for fog_log, action_indices in batch:
-            tokens, _ = self.encoder.embed(fog_log, action_indices)
+        for fog_log, action_indices, player in batch:
+            tokens, _ = self.encoder.embed(fog_log, action_indices, player)
             token_seqs.append(tokens)
             n_fogs.append(len(fog_log))
 
@@ -337,7 +344,7 @@ class FogChessNet(nn.Module):
         )
 
         outputs: List[ForwardOutput] = []
-        for i, (fog_log, action_indices) in enumerate(batch):
+        for i, (fog_log, action_indices, _) in enumerate(batch):
             n_fog = n_fogs[i]
             n_act = len(action_indices)
             h = hidden_batch[i, : 1 + n_fog + n_act]
@@ -350,12 +357,12 @@ class FogChessNet(nn.Module):
 
     def forward_with_reconstruction_batch(
         self,
-        batch: List[Tuple[List[Tuple[int, int, int]], List[Tuple[int, int]]]],
+        batch: List[Tuple[List[Tuple[int, int, int]], List[Tuple[int, int]], int]],
         temperature: float = 1.0,
     ) -> List[ForwardOutput]:
         """Reconstruct masks for each item independently, then run a single batched forward."""
         determinized = [
-            (self.reconstruct_masks(fog_log, action_indices, temperature), action_indices)
-            for fog_log, action_indices in batch
+            (self.reconstruct_masks(fog_log, action_indices, player, temperature), action_indices, player)
+            for fog_log, action_indices, player in batch
         ]
         return self.forward_batch(determinized)
