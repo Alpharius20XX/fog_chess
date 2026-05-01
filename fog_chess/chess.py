@@ -148,7 +148,7 @@ class Minichess:
         self.board_size = 5
         self.reset()
 
-    def reset(self):
+    def reset(self, fog: bool = False):
         self.board = np.array(
             [
                 [
@@ -188,10 +188,13 @@ class Minichess:
         self.winner = None
         self.move_history: List[Move] = []
         self.move_count = 0
-        return self.get_state()
+        return self.get_observation() if fog else self.get_state()
 
     def get_state(self):
         return tuple(tuple(row) for row in self.board)
+
+    def get_observation(self, player: Optional[int] = None):
+        return self.get_fog_state(self.current_player if player is None else player)
 
     def get_fog_state(self, player: int):
         visible: set = set()
@@ -460,7 +463,10 @@ class Minichess:
 
         reward = 0
         if move.captured:
-            reward = abs(move.captured.get_value(True)) / 100
+            if move.captured in (Piece.WHITE_KING, Piece.BLACK_KING):
+                reward = 500
+            else:
+                reward = abs(move.captured.get_value(True)) / 100
         if move.promotion:
             reward += 5
 
@@ -476,7 +482,7 @@ class Minichess:
             self.game_over = True
             if is_check:
                 self.winner = 3 - self.current_player
-                reward = 100
+                reward = 500
             else:
                 self.winner = 0
                 reward = 0
@@ -486,6 +492,18 @@ class Minichess:
             self.winner = 0
 
         return self.get_state(), reward, self.game_over
+
+    def step(self, move: Move, fog: bool = True):
+        player = self.current_player
+        _, reward, done = self.make_move(move)
+        observation = self.get_observation() if fog else self.get_state()
+        info = {
+            "player": player,
+            "next_player": self.current_player,
+            "winner": self.winner,
+            "move_count": self.move_count,
+        }
+        return observation, reward, done, info
 
     def evaluate_position(self, player: int) -> float:
         if self.winner == player:
